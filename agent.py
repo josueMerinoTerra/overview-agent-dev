@@ -97,8 +97,11 @@ def run(root: str, model: str, max_turns: int, max_tokens: int = 16000, metrics_
 
     for turn in range(1, max_turns + 1):
         try:
+            # The system block caches tools + instructions; the top-level breakpoint follows the end of the
+            # conversation, so each turn reads all earlier turns from cache instead of re-sending them.
             resp = client.messages.create(
                 model=model, max_tokens=max_tokens, system=system, tools=TOOLS, messages=messages,
+                cache_control={"type": "ephemeral"},
             )
         except anthropic.AuthenticationError:
             sys.exit("error: authentication failed. Set ANTHROPIC_API_KEY (or run `ant auth login`).")
