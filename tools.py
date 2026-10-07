@@ -1,7 +1,7 @@
 """Sandboxed repo tools for the Product Overview Agent.
 
 The model decides *what* to look at; this module enforces the hard rules from
-Claude.md in code, so a prompt slip can't break them:
+prompts/overview_agent.md in code, so a prompt slip can't break them:
 
   * nothing is read inside node_modules/.git/dist/build/vendor, lockfiles or generated code
   * Tier 1 reads are limited to curated docs + manifests
@@ -53,7 +53,7 @@ REQUIRED_HEADINGS = [
     "Evidence & confidence",
     "Open questions",
 ]
-MAX_WORDS = 700  # Claude.md says "under ~600"; 600-700 passes with a warning.
+MAX_WORDS = 700  # the prompt says "under ~600"; 600-700 passes with a warning.
 SOFT_WORDS = 600
 
 

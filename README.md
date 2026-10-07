@@ -1,7 +1,7 @@
 # Product Overview Agent
 
 Writes a `PROJECT_OVERVIEW.md` (what the product does, not how) at the root of a local repo.
-Instructions live in `Claude.md`; `tools.py` enforces its hard rules in code (ignore list, Tier 3 budget, single writable file).
+Instructions live in `prompts/overview_agent.md`; `tools.py` enforces its hard rules in code (ignore list, Tier 3 budget, single writable file).
 
 ```bash
 cd overview-agent-dev

@@ -3,5 +3,8 @@
     "allow": [
       "Skill(claude-api)"
     ]
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true
   }
 }

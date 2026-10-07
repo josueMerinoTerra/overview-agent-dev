@@ -3,7 +3,7 @@
 
 Usage:  python agent.py [repo_path] [--model MODEL] [--max-turns N]
 
-The instructions come from Claude.md (next to this file). The model explores the
+The instructions come from prompts/overview_agent.md (relative to this file). The model explores the
 repo only through the sandboxed tools in tools.py, which enforce the hard rules.
 """
 from __future__ import annotations
@@ -22,28 +22,6 @@ from tools import OVERVIEW_NAME, TIER3_MAX_FILES, TOOLS, RepoSandbox, ToolError
 DEFAULT_MODEL = "claude-sonnet-5-5"
 HERE = Path(__file__).resolve().parent
 
-RUNTIME_PREFACE = """\
-# Runtime notes (this program, not the repository, supplies these)
-
-You run inside a small Python harness. You have NO shell: wherever the instructions below show shell
-commands (ls, find, grep, cat, head), use the matching tools instead:
-- list_tree  = ls / find -type d  (names only)
-- find_files = find -path '*route*' ...  (names only)
-- grep       = grep -o  (matched fragments only)
-- read_file  = cat / head. tier=1 for curated docs and manifests; tier=3 for the budgeted targeted reads,
-               which require `question` (1, 2 or 3) and a `reason`.
-- write_overview = the only way to write; it validates the template and tells you what to fix.
-
-The harness enforces the ignore list, the Tier 3 budget (5 files, 120 lines) and the single writable file.
-Before escalating to Tier 3, say in one sentence which question you are escalating for and why.
-When write_overview succeeds, finish with the short summary the instructions ask for. The harness will
-append the authoritative Tier 3 file count, so do not guess it.
-
----
-
-"""
-
-
 def load_dotenv(path: Path = HERE / ".env") -> None:
     """Minimal .env loader (KEY=VALUE lines). Existing environment variables win; empty values are skipped."""
     if not path.is_file():
@@ -59,10 +37,10 @@ def load_dotenv(path: Path = HERE / ".env") -> None:
 
 
 def load_instructions() -> str:
-    for p in sorted(HERE.iterdir()):
-        if p.name.lower() == "claude.md":
-            return p.read_text(encoding="utf-8")
-    sys.exit("error: Claude.md not found next to agent.py")
+    path = HERE / "prompts" / "overview_agent.md"
+    if not path.is_file():
+        sys.exit("error: prompts/overview_agent.md not found next to agent.py")
+    return path.read_text(encoding="utf-8")
 
 
 def trace(msg: str) -> None:
@@ -78,7 +56,7 @@ def run(root: str, model: str, max_turns: int, max_tokens: int = 16000, metrics_
     client = anthropic.Anthropic()
     system = [{
         "type": "text",
-        "text": RUNTIME_PREFACE + load_instructions(),
+        "text": load_instructions(),
         "cache_control": {"type": "ephemeral"},
     }]
     messages = [{
