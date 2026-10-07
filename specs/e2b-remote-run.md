@@ -38,8 +38,9 @@ Pure functions (offline-testable):
   ending in `.git`, are git. Anything else must be an existing directory, or the run exits with an error.
 - `make_tarball(path) -> bytes`: a `.tar.gz` of the folder that **excludes exactly what the agent can't read**:
   ignored dirs (`IGNORED_DIRS` and `.git*`) and ignored names (lockfiles, generated files, and secrets such as
-  `.env`, `.env.*`, `*.pem`, `*.key`, plus an existing `PROJECT_OVERVIEW.md`). Symlinks are stored as links and
-  never followed, so a symlink can't pull in a file from outside the folder.
+  `.env`, `.env.*`, `*.pem`, `*.key`, plus an existing `PROJECT_OVERVIEW.md`), plus any `OVERVIEW_EXTRA_IGNORE`
+  patterns (see below). Symlinks are stored as links and never followed, so a symlink can't pull in a file from
+  outside the folder.
 - `output_dir(source, out) -> Path`: `out` if given, else `<project>/overviews/<name>/`, resolved against this
   project's folder, not the cwd. `<name>` is the last path segment with `.git` and trailing slashes stripped.
 
@@ -53,7 +54,7 @@ tests can inject a fake. Flow:
    - local: print the tarball size, write it to `/home/user/repo.tar.gz`, then extract it into `/home/user/repo`
 5. Run `python agent.py /home/user/repo --model … --max-turns … --max-tokens … --metrics-json
    /home/user/metrics.json` with `cwd=/home/user/agent` and `envs={"ANTHROPIC_API_KEY": …}` (passed to this
-   command only). Stream stderr (the trace) live to local stderr, and collect stdout (the summary). Set the
+   command only), plus `OVERVIEW_EXTRA_IGNORE` when it is set. Stream stderr (the trace) live to local stderr, and collect stdout (the summary). Set the
    command's own timeout explicitly to 14 minutes. E2B's per-command default is much shorter than an agent run,
    so it must not be left at the default.
 6. Download `/home/user/repo/PROJECT_OVERVIEW.md` (if written) and `/home/user/metrics.json` (if present) into
@@ -76,13 +77,32 @@ Each failure prints one `error: …` line and exits non-zero. The sandbox is kil
 | Agent exits non-zero | Still download `metrics.json` if present, pass the agent's exit code through |
 | Sandbox timeout | `error: sandbox timed out`, exit 1 |
 
+### Extra ignore patterns: `OVERVIEW_EXTRA_IGNORE`
+The built-in secret patterns can't cover every project's naming (`credentials.json`, `*.p12`, a `secrets/`
+folder…). `OVERVIEW_EXTRA_IGNORE` is a comma-separated list of glob patterns, for example
+`OVERVIEW_EXTRA_IGNORE=credentials.json,*.p12,secrets`. It is set in `.env` or the environment like the other
+`OVERVIEW_*` keys.
+- **Add-only.** Patterns are appended to the built-in lists and can never remove or override them, so a typo can't
+  expose `.env`.
+- Each pattern is matched with `fnmatch` against **every path component**, both file names and directory names.
+  A matching directory is skipped together with everything under it.
+- **One list for both sides:** it applies to the tarball upload *and* to the agent's own read rules
+  (`RepoSandbox`), so it also protects local `agent.py` runs. Blank entries and surrounding whitespace are
+  ignored.
+- It is read once per use (when `RepoSandbox` is created, and once at the start of `make_tarball`), not at import
+  time, so values loaded from `.env` by `load_dotenv()` are seen.
+- For a git source, the sandbox's `agent.py` gets the same value through the agent command's `envs`, so the agent
+  can't read those files in a cloned repo either.
+
 ### Small edits
-- `tools.py`: move the ignore rules out of `RepoSandbox` into public module functions `is_ignored_dir(name)` and
-  `is_ignored_name(name)`, so `RepoSandbox` and `make_tarball` share one source of truth. No behavior change, and
-  `test_tools.py` still covers it.
+- `tools.py`: move the ignore rules out of `RepoSandbox` into public module functions:
+  `ignore_patterns() -> (dir_names, name_patterns)` (built-ins plus `OVERVIEW_EXTRA_IGNORE`),
+  `is_ignored_dir(name, patterns)` and `is_ignored_name(name, patterns)`. `RepoSandbox` and `make_tarball` then
+  share one source of truth. With the variable unset, behavior is unchanged, and `test_tools.py` still covers it.
 - `requirements.txt`: add `e2b`, pinned to the version the implementation is tested against (the E2B Python API
   has changed between major versions).
-- `.env.example`: add `E2B_API_KEY=`.
+- `.env.example`: add `E2B_API_KEY=` and `OVERVIEW_EXTRA_IGNORE=` (with a comment saying it is add-only and
+  comma-separated).
 - `.gitignore`: add `overviews/`.
 - `README.md`: add a "Remote run (E2B)" section (get an E2B key, build the template once, run `remote.py`).
 - `CLAUDE.md`: under "Where responsibilities live", add `remote.py` (E2B orchestration) and `e2b_template.py`
@@ -95,7 +115,9 @@ Each failure prints one `error: …` line and exits non-zero. The sandbox is kil
 - The Anthropic key exists inside the running sandbox only for the agent command. It is never in the template, in
   build logs, or in an image.
 - The agent has no shell or network tool, so even a malicious target repo can't make it exfiltrate the key.
-- Local uploads never include files that match the secret patterns.
+- Local uploads never include files that match the built-in secret patterns or `OVERVIEW_EXTRA_IGNORE`. A
+  project-specific secret file that matches neither *is* uploaded (the same files a local run would let the agent
+  read). Add its pattern to `OVERVIEW_EXTRA_IGNORE` before running on that folder.
 
 ## Tests
 - New `test_remote.py`, offline with no keys, in the style of `test_agent.py`:
@@ -103,10 +125,16 @@ Each failure prints one `error: …` line and exits non-zero. The sandbox is kil
   - `make_tarball`: includes normal files, excludes `node_modules/`, `.git/`, `.env` and `id.pem`, and does not
     follow a symlink that points outside the folder
   - `output_dir`: `…/repo.git`, a trailing slash, a local path, an explicit `--out`
+  - `make_tarball` with `OVERVIEW_EXTRA_IGNORE="credentials.json, secrets"`: excludes `credentials.json` and
+    everything under `secrets/`, still excludes `.env`, and includes the other files
   - `run_remote` with a fake sandbox: `ANTHROPIC_API_KEY` appears only in the agent command's `envs`, the
     results land in the out dir, the exit code is passed through, `kill()` is called on success and on failure
-    (and not with `--keep`), and a missing key exits without calling the factory
-- `test_tools.py` and `test_agent.py`: unchanged and passing.
+    (and not with `--keep`), a missing key exits without calling the factory, and `OVERVIEW_EXTRA_IGNORE` is
+    forwarded in `envs` when set
+- `test_tools.py`: the existing tests pass unchanged. New tests check that `ignore_patterns()` with
+  `OVERVIEW_EXTRA_IGNORE` set blocks `read_file` on a matching file and hides a matching directory from the
+  listing. With the variable unset, the built-ins behave as before. An entry like `,, ` adds nothing.
+- `test_agent.py`: unchanged and passing.
 
 ## Measurement protocol (to do)
 - **Runs:** one remote run on a local folder (`../dayNight`) and one on a small public GitHub repo, plus a local
