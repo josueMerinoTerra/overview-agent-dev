@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Product Overview Agent: writes PROJECT_OVERVIEW.md for a local repository.
+
+Usage:  python agent.py [repo_path] [--model MODEL] [--max-turns N]
+
+The instructions come from Claude.md (next to this file). The model explores the
+repo only through the sandboxed tools in tools.py, which enforce the hard rules.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+import anthropic
+
+from tools import OVERVIEW_NAME, TIER3_MAX_FILES, TOOLS, RepoSandbox, ToolError
+
+DEFAULT_MODEL = "claude-sonnet-5-5"
+HERE = Path(__file__).resolve().parent
+
+RUNTIME_PREFACE = """\
+# Runtime notes (this program, not the repository, supplies these)
+
+You run inside a small Python harness. You have NO shell: wherever the instructions below show shell
+commands (ls, find, grep, cat, head), use the matching tools instead:
+- list_tree  = ls / find -type d  (names only)
+- find_files = find -path '*route*' ...  (names only)
+- grep       = grep -o  (matched fragments only)
+- read_file  = cat / head. tier=1 for curated docs and manifests; tier=3 for the budgeted targeted reads,
+               which require `question` (1, 2 or 3) and a `reason`.
+- write_overview = the only way to write; it validates the template and tells you what to fix.
+
+The harness enforces the ignore list, the Tier 3 budget (5 files, 120 lines) and the single writable file.
+Before escalating to Tier 3, say in one sentence which question you are escalating for and why.
+When write_overview succeeds, finish with the short summary the instructions ask for. The harness will
+append the authoritative Tier 3 file count, so do not guess it.
+
+---
+
+"""
+
+
+def load_dotenv(path: Path = HERE / ".env") -> None:
+    """Minimal .env loader (KEY=VALUE lines). Existing environment variables win; empty values are skipped."""
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        value = value.strip().strip("'\"")
+        if value:
+            os.environ.setdefault(key.strip(), value)
+
+
+def load_instructions() -> str:
+    for p in sorted(HERE.iterdir()):
+        if p.name.lower() == "claude.md":
+            return p.read_text(encoding="utf-8")
+    sys.exit("error: Claude.md not found next to agent.py")
+
+
+def trace(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
+
+
+def run(root: str, model: str, max_turns: int, max_tokens: int = 16000) -> int:
+    try:
+        sandbox = RepoSandbox(root, log=trace)
+    except ToolError as e:
+        sys.exit("error: %s" % e)
+
+    client = anthropic.Anthropic()
+    system = [{
+        "type": "text",
+        "text": RUNTIME_PREFACE + load_instructions(),
+        "cache_control": {"type": "ephemeral"},
+    }]
+    messages = [{
+        "role": "user",
+        "content": (
+            "Create %s for the repository at the sandbox root (paths are relative to it: '.'). "
+            "Follow Stage 1, 2 and 3 of your instructions." % OVERVIEW_NAME
+        ),
+    }]
+    final_text = ""
+    nudged = False
+
+    for turn in range(1, max_turns + 1):
+        try:
+            resp = client.messages.create(
+                model=model, max_tokens=max_tokens, system=system, tools=TOOLS, messages=messages,
+            )
+        except anthropic.AuthenticationError:
+            sys.exit("error: authentication failed. Set ANTHROPIC_API_KEY (or run `ant auth login`).")
+        except anthropic.APIStatusError as e:
+            sys.exit("error: API returned %s: %s" % (e.status_code, e.message))
+        except anthropic.APIConnectionError as e:
+            sys.exit("error: could not reach the API: %s" % e)
+
+        messages.append({"role": "assistant", "content": resp.content})
+        text = "\n".join(b.text for b in resp.content if b.type == "text").strip()
+
+        if resp.stop_reason == "refusal":
+            sys.exit("error: the model declined this request (stop_reason=refusal)")
+        if resp.stop_reason == "max_tokens":
+            sys.exit("error: response hit max_tokens before finishing")
+
+        if resp.stop_reason != "tool_use":
+            final_text = text
+            if sandbox.overview_written or nudged:
+                break
+            nudged = True  # finished without writing the file: one reminder, then give up
+            messages.append({"role": "user", "content": "You have not written %s yet. Call write_overview." % OVERVIEW_NAME})
+            continue
+
+        if text:
+            trace("\n[turn %d] %s" % (turn, text))
+        results = []
+        for block in (b for b in resp.content if b.type == "tool_use"):
+            trace("  -> %s %s" % (block.name, block.input))
+            try:
+                out, is_error = sandbox.call(block.name, block.input), False
+            except ToolError as e:
+                out, is_error = str(e), True
+            except Exception as e:  # a tool bug must not kill the run; let the model see it
+                out, is_error = "internal tool error: %s" % e, True
+            if is_error:
+                trace("     ! %s" % out.splitlines()[0])
+            results.append({"type": "tool_result", "tool_use_id": block.id, "content": out, "is_error": is_error})
+        messages.append({"role": "user", "content": results})
+    else:
+        trace("warning: stopped after %d turns" % max_turns)
+
+    # Ground truth from the sandbox, not from the model's self-report.
+    print(final_text)
+    print("\n---")
+    print("Tier 3 files read: %d/%d" % (len(sandbox.tier3), TIER3_MAX_FILES))
+    for rel, q in sandbox.tier3.items():
+        print("  %s -> question %d" % (rel, q))
+    if sandbox.overview_written:
+        print("Wrote %s" % (sandbox.root / OVERVIEW_NAME))
+        return 0
+    print("error: %s was not written" % OVERVIEW_NAME, file=sys.stderr)
+    return 1
+
+
+def main() -> None:
+    load_dotenv()
+    env = os.environ.get
+    ap = argparse.ArgumentParser(description="Write PROJECT_OVERVIEW.md for a local repository.")
+    ap.add_argument("repo", nargs="?", default=env("OVERVIEW_REPO_PATH", "."),
+                    help="repository root (default: $OVERVIEW_REPO_PATH or the current directory)")
+    ap.add_argument("--model", default=env("OVERVIEW_MODEL", DEFAULT_MODEL))
+    ap.add_argument("--max-turns", type=int, default=int(env("OVERVIEW_MAX_TURNS", "25")))
+    ap.add_argument("--max-tokens", type=int, default=int(env("OVERVIEW_MAX_TOKENS", "16000")))
+    args = ap.parse_args()
+    if not (env("ANTHROPIC_API_KEY") or env("ANTHROPIC_AUTH_TOKEN")):
+        trace("note: ANTHROPIC_API_KEY is not set (add it to .env); relying on an `ant auth login` profile if one exists")
+    sys.exit(run(args.repo, args.model, args.max_turns, args.max_tokens))
+
+
+if __name__ == "__main__":
+    main()
