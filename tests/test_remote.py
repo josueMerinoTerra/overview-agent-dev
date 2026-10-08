@@ -134,7 +134,7 @@ class FakeCommands:
             raise CommandExitException(stderr="fatal: repository not found", stdout="", exit_code=128, error=None)
         if cmd.startswith("git clone") and self.repo_has_overview:  # an overview committed in the cloned repo
             self.sbx.files.store[remote.REPO_DIR + "/" + OVERVIEW_NAME] = "# Old: Product Overview\n"
-        if cmd.startswith("python agent.py"):
+        if cmd.startswith("python main.py local"):
             if self.agent_times_out:
                 raise TimeoutException("command timed out")
             kw["on_stderr"]("[turn 1] reading README\n")
@@ -160,7 +160,7 @@ class FakeSandbox:
             raise SandboxException("network blip")
 
     def agent_run(self):
-        return next((cmd, kw) for cmd, kw in self.commands.runs if cmd.startswith("python agent.py"))
+        return next((cmd, kw) for cmd, kw in self.commands.runs if cmd.startswith("python main.py local"))
 
 
 KEYS = {"E2B_API_KEY": "e2b_test", "ANTHROPIC_API_KEY": "sk-test"}
@@ -189,7 +189,7 @@ class RunRemoteTests(unittest.TestCase):
         code, out, err = self.run_with(sbx)
         self.assertEqual(code, 0)
         self.assertEqual(self.factory_calls, [{"template": remote.TEMPLATE, "timeout": remote.SANDBOX_TIMEOUT}])
-        for rel in remote.AGENT_FILES:
+        for rel in remote.agent_files():
             self.assertIn(remote.AGENT_DIR + "/" + rel, sbx.files.store)
         self.assertEqual((self.out / OVERVIEW_NAME).read_text(), "# X: Product Overview\n")
         self.assertEqual((self.out / "metrics.json").read_text(), '{"turns": 1}\n')
@@ -201,12 +201,13 @@ class RunRemoteTests(unittest.TestCase):
         sbx = FakeSandbox()
         self.run_with(sbx)
         cmd, kw = sbx.agent_run()
+        self.assertTrue(cmd.startswith("python main.py local %s --model " % remote.REPO_DIR), cmd)
         self.assertEqual(kw["envs"], {"ANTHROPIC_API_KEY": "sk-test"})
         self.assertEqual(kw["cwd"], remote.AGENT_DIR)
         self.assertEqual(kw["timeout"], remote.AGENT_TIMEOUT)
         self.assertIn("--model claude-sonnet-5-5 --max-turns 25 --max-tokens 16000", cmd)
         self.assertIn("--metrics-json " + remote.METRICS, cmd)
-        others = [kw for c, kw in sbx.commands.runs if not c.startswith("python agent.py")]
+        others = [kw for c, kw in sbx.commands.runs if not c.startswith("python main.py local")]
         self.assertTrue(all("ANTHROPIC_API_KEY" not in (kw.get("envs") or {}) for kw in others))
         self.assertTrue(all("sk-test" not in str(v) for v in sbx.files.store.values()))
 
@@ -222,7 +223,7 @@ class RunRemoteTests(unittest.TestCase):
         code, _, err = self.run_with(sbx)
         self.assertEqual(code, 1)
         self.assertIn("fatal: repository not found", err)
-        self.assertFalse(any(c.startswith("python agent.py") for c, _ in sbx.commands.runs))
+        self.assertFalse(any(c.startswith("python main.py local") for c, _ in sbx.commands.runs))
         self.assertTrue(sbx.killed)
 
     def test_local_source_uploads_and_extracts_the_tarball(self):
@@ -321,6 +322,26 @@ class RunRemoteTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("error: connection reset", err)
         self.assertTrue(sbx.killed)
+
+
+class AgentFilesTests(unittest.TestCase):
+    def test_real_package_is_uploaded_with_its_prompt(self):
+        files = remote.agent_files()
+        self.assertEqual(files[0], "main.py")
+        for rel in ("overview_agent/agent.py", "overview_agent/config.py",
+                    "overview_agent/prompts/overview_agent.md"):
+            self.assertIn(rel, files)
+        self.assertFalse(any("__pycache__" in rel for rel in files))
+
+    def test_only_code_and_prompts_are_uploaded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel in ("overview_agent/a.py", "overview_agent/prompts/p.md", "overview_agent/.DS_Store",
+                        "overview_agent/__pycache__/a.cpython-39.pyc"):
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_bytes(b"\x00\xff")
+            self.assertEqual(remote.agent_files(root),
+                             ["main.py", "overview_agent/a.py", "overview_agent/prompts/p.md"])
 
 
 class TemplateTests(unittest.TestCase):

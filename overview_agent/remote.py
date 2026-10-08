@@ -14,14 +14,15 @@ import shlex
 import sys
 import tarfile
 from pathlib import Path
-from typing import Tuple
+from typing import List, Tuple
 
 from e2b import AuthenticationException, CommandExitException, Sandbox, TimeoutException
 
 from overview_agent.config import PROJECT_ROOT, trace
 from overview_agent.tools import OVERVIEW_NAME, is_ignored_dir, is_ignored_name
 
-HERE = Path(__file__).resolve().parent
+AGENT_PACKAGE = "overview_agent"
+AGENT_SUFFIXES = (".py", ".md")  # code and prompts; never caches or OS files like .DS_Store
 TEMPLATE = "overview-agent"
 SANDBOX_TIMEOUT = 15 * 60  # seconds, the whole sandbox
 AGENT_TIMEOUT = 14 * 60    # seconds; E2B's per-command default (60s) is far shorter than an agent run
@@ -31,7 +32,6 @@ AGENT_DIR = HOME + "/agent"
 REPO_DIR = HOME + "/repo"
 TARBALL = HOME + "/repo.tar.gz"
 METRICS = HOME + "/metrics.json"
-AGENT_FILES = ("agent.py", "tools.py", "prompts/overview_agent.md")
 
 URL_PREFIXES = ("https://", "http://")
 HOST_PATH = re.compile(r"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+/[^/]")  # github.com/org/repo, without a scheme
@@ -73,6 +73,12 @@ def output_dir(source: Tuple[str, str], out: str = "") -> Path:
     if out:
         return Path(out).expanduser().resolve()
     return PROJECT_ROOT / "overviews" / repo_name(source)
+
+
+def agent_files(root: Path = PROJECT_ROOT) -> List[str]:
+    """What the sandbox needs to run the agent: main.py plus the package's code and prompts, relative to `root`."""
+    package = sorted(p for p in (root / AGENT_PACKAGE).rglob("*") if p.is_file() and p.suffix in AGENT_SUFFIXES)
+    return ["main.py"] + [p.relative_to(root).as_posix() for p in package]
 
 
 def make_tarball(path: str) -> bytes:
@@ -145,8 +151,8 @@ def run_remote(source: Tuple[str, str], args, sandbox_factory=None) -> int:
 
 
 def _run_in_sandbox(sbx, kind: str, where: str, tarball: bytes, out: Path, args) -> int:
-    for rel in AGENT_FILES:
-        sbx.files.write("%s/%s" % (AGENT_DIR, rel), (HERE / rel).read_text(encoding="utf-8"))
+    for rel in agent_files():
+        sbx.files.write("%s/%s" % (AGENT_DIR, rel), (PROJECT_ROOT / rel).read_text(encoding="utf-8"))
     if kind == "git":
         try:
             sbx.commands.run("git clone --depth 1 %s %s" % (shlex.quote(where), REPO_DIR),
@@ -158,7 +164,7 @@ def _run_in_sandbox(sbx, kind: str, where: str, tarball: bytes, out: Path, args)
         sbx.files.write(TARBALL, tarball)
         sbx.commands.run("tar -xzf %s -C %s" % (TARBALL, HOME))
 
-    cmd = "python agent.py %s --model %s --max-turns %d --max-tokens %d --metrics-json %s" % (
+    cmd = "python main.py local %s --model %s --max-turns %d --max-tokens %d --metrics-json %s" % (
         REPO_DIR, shlex.quote(args.model), args.max_turns, args.max_tokens, METRICS)
     try:
         result = sbx.commands.run(cmd, cwd=AGENT_DIR, envs={"ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"]},
