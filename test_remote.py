@@ -6,9 +6,15 @@ import os
 import tarfile
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+from e2b import CommandExitException, SandboxException, TimeoutException
 
 import remote
+from tools import OVERVIEW_NAME
 
 
 def tar_members(data: bytes):
@@ -96,6 +102,180 @@ class TarballTests(unittest.TestCase):
         with tarfile.open(fileobj=io.BytesIO(self.data), mode="r:gz") as tar:
             contents = [tar.extractfile(m).read() for m in tar.getmembers() if m.isreg()]
         self.assertNotIn(b"secret", contents)
+
+
+class FakeFiles:
+    def __init__(self):
+        self.store = {}
+
+    def write(self, path, data):
+        self.store[path] = data
+
+    def exists(self, path):
+        return path in self.store
+
+    def read(self, path, format="text"):
+        data = self.store[path]
+        return data.encode() if format == "bytes" and isinstance(data, str) else data
+
+
+class FakeCommands:
+    def __init__(self, sbx, agent_exit=0, clone_fails=False, agent_times_out=False):
+        self.sbx, self.agent_exit, self.clone_fails, self.agent_times_out = sbx, agent_exit, clone_fails, agent_times_out
+        self.runs = []
+
+    def run(self, cmd, **kw):
+        self.runs.append((cmd, kw))
+        if cmd.startswith("git clone") and self.clone_fails:
+            raise CommandExitException(stderr="fatal: repository not found", stdout="", exit_code=128, error=None)
+        if cmd.startswith("python agent.py"):
+            if self.agent_times_out:
+                raise TimeoutException("command timed out")
+            kw["on_stderr"]("[turn 1] reading README\n")
+            self.sbx.files.store[remote.METRICS] = '{"turns": 1}\n'
+            if self.agent_exit:
+                raise CommandExitException(stderr="", stdout="no overview", exit_code=self.agent_exit, error=None)
+            self.sbx.files.store[remote.REPO_DIR + "/" + OVERVIEW_NAME] = "# X: Product Overview\n"
+            return SimpleNamespace(stdout="agent summary\n", stderr="", exit_code=0)
+        return SimpleNamespace(stdout="", stderr="", exit_code=0)
+
+
+class FakeSandbox:
+    def __init__(self, kill_fails=False, **behavior):
+        self.sandbox_id = "sbx-test"
+        self.files = FakeFiles()
+        self.commands = FakeCommands(self, **behavior)
+        self.kill_fails = kill_fails
+        self.killed = False
+
+    def kill(self):
+        self.killed = True
+        if self.kill_fails:
+            raise SandboxException("network blip")
+
+    def agent_run(self):
+        return next((cmd, kw) for cmd, kw in self.commands.runs if cmd.startswith("python agent.py"))
+
+
+KEYS = {"E2B_API_KEY": "e2b_test", "ANTHROPIC_API_KEY": "sk-test"}
+
+
+class RunRemoteTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.out = Path(self._tmp.name) / "out"
+        self.args = SimpleNamespace(model="claude-sonnet-5-5", max_turns=25, max_tokens=16000,
+                                    out=str(self.out), keep=False)
+        self.factory_calls = []
+
+    def run_with(self, sbx, source=("git", "https://github.com/org/repo"), env=KEYS):
+        def factory(**kwargs):
+            self.factory_calls.append(kwargs)
+            return sbx
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True), redirect_stdout(out), redirect_stderr(err):
+            code = remote.run_remote(source, self.args, sandbox_factory=factory)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_success_downloads_results_and_kills_the_sandbox(self):
+        sbx = FakeSandbox()
+        code, out, err = self.run_with(sbx)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.factory_calls, [{"template": remote.TEMPLATE, "timeout": remote.SANDBOX_TIMEOUT}])
+        for rel in remote.AGENT_FILES:
+            self.assertIn(remote.AGENT_DIR + "/" + rel, sbx.files.store)
+        self.assertEqual((self.out / OVERVIEW_NAME).read_text(), "# X: Product Overview\n")
+        self.assertEqual((self.out / "metrics.json").read_text(), '{"turns": 1}\n')
+        self.assertIn("agent summary", out)
+        self.assertIn("[turn 1] reading README", err)  # trace streamed live
+        self.assertTrue(sbx.killed)
+
+    def test_api_key_goes_only_to_the_agent_command(self):
+        sbx = FakeSandbox()
+        self.run_with(sbx)
+        cmd, kw = sbx.agent_run()
+        self.assertEqual(kw["envs"], {"ANTHROPIC_API_KEY": "sk-test"})
+        self.assertEqual(kw["cwd"], remote.AGENT_DIR)
+        self.assertEqual(kw["timeout"], remote.AGENT_TIMEOUT)
+        self.assertIn("--model claude-sonnet-5-5 --max-turns 25 --max-tokens 16000", cmd)
+        self.assertIn("--metrics-json " + remote.METRICS, cmd)
+        others = [kw for c, kw in sbx.commands.runs if not c.startswith("python agent.py")]
+        self.assertTrue(all("ANTHROPIC_API_KEY" not in (kw.get("envs") or {}) for kw in others))
+        self.assertTrue(all("sk-test" not in str(v) for v in sbx.files.store.values()))
+
+    def test_git_clone_is_shallow_quoted_and_never_prompts(self):
+        sbx = FakeSandbox()
+        self.run_with(sbx, source=("git", "https://github.com/org/my repo"))
+        cmd, kw = sbx.commands.runs[0]
+        self.assertEqual(cmd, "git clone --depth 1 'https://github.com/org/my repo' " + remote.REPO_DIR)
+        self.assertEqual(kw["envs"], {"GIT_TERMINAL_PROMPT": "0"})
+
+    def test_clone_failure_reports_git_error_and_skips_agent(self):
+        sbx = FakeSandbox(clone_fails=True)
+        code, _, err = self.run_with(sbx)
+        self.assertEqual(code, 1)
+        self.assertIn("fatal: repository not found", err)
+        self.assertFalse(any(c.startswith("python agent.py") for c, _ in sbx.commands.runs))
+        self.assertTrue(sbx.killed)
+
+    def test_local_source_uploads_and_extracts_the_tarball(self):
+        with tempfile.TemporaryDirectory() as src:
+            Path(src, "README.md").write_text("hi\n")
+            sbx = FakeSandbox()
+            code, _, err = self.run_with(sbx, source=("local", src))
+        self.assertEqual(code, 0)
+        self.assertIn("repo/README.md", tar_members(sbx.files.store[remote.TARBALL]))
+        self.assertIn(("tar -xzf %s -C %s" % (remote.TARBALL, remote.HOME)), [c for c, _ in sbx.commands.runs])
+        self.assertIn("MB", err)  # upload size is shown before uploading
+
+    def test_agent_failure_passes_exit_code_keeps_metrics_and_clears_stale_overview(self):
+        self.out.mkdir(parents=True)
+        (self.out / OVERVIEW_NAME).write_text("old run\n")
+        sbx = FakeSandbox(agent_exit=1)
+        code, _, _ = self.run_with(sbx)
+        self.assertEqual(code, 1)
+        self.assertTrue((self.out / "metrics.json").exists())
+        self.assertFalse((self.out / OVERVIEW_NAME).exists())
+        self.assertTrue(sbx.killed)
+
+    def test_timeout_is_reported_and_the_sandbox_killed(self):
+        sbx = FakeSandbox(agent_times_out=True)
+        code, _, err = self.run_with(sbx)
+        self.assertEqual(code, 1)
+        self.assertIn("error: sandbox timed out", err)
+        self.assertTrue(sbx.killed)
+
+    def test_keep_skips_kill_and_prints_the_id(self):
+        self.args.keep = True
+        sbx = FakeSandbox()
+        code, _, err = self.run_with(sbx)
+        self.assertEqual(code, 0)
+        self.assertFalse(sbx.killed)
+        self.assertIn("sbx-test", err)
+
+    def test_kill_failure_does_not_change_the_result(self):
+        sbx = FakeSandbox(kill_fails=True)
+        code, _, err = self.run_with(sbx)
+        self.assertEqual(code, 0)
+        self.assertIn("warning: could not kill sandbox sbx-test", err)
+
+    def test_missing_key_never_creates_a_sandbox(self):
+        for env in ({"ANTHROPIC_API_KEY": "sk-test"}, {"E2B_API_KEY": "e2b_test"}):
+            code, _, err = self.run_with(FakeSandbox(), env=env)
+            self.assertEqual(code, 1)
+            self.assertIn("not set", err)
+        self.assertEqual(self.factory_calls, [])
+
+    def test_sandbox_creation_failure_points_at_the_template_script(self):
+        def failing_factory(**kwargs):
+            raise SandboxException("404: template 'overview-agent' not found")
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, KEYS, clear=True), redirect_stderr(err):
+            code = remote.run_remote(("git", "https://h/x"), self.args, sandbox_factory=failing_factory)
+        self.assertEqual(code, 1)
+        self.assertIn("python e2b_template.py", err.getvalue())
+        self.assertIn("404", err.getvalue())
 
 
 if __name__ == "__main__":
