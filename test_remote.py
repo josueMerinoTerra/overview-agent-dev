@@ -278,5 +278,38 @@ class RunRemoteTests(unittest.TestCase):
         self.assertIn("404", err.getvalue())
 
 
+class MainTests(unittest.TestCase):
+    def test_bad_source_is_one_error_line_and_no_sandbox(self):
+        err = io.StringIO()
+        with mock.patch.object(remote, "load_dotenv"), mock.patch.object(remote, "run_remote") as run, \
+                redirect_stderr(err):
+            code = remote.main(["/definitely/not/here"])
+        self.assertEqual(code, 1)
+        self.assertIn("error: not a git URL or an existing directory", err.getvalue())
+        run.assert_not_called()
+
+    def test_flags_and_env_defaults_reach_run_remote(self):
+        env = {"OVERVIEW_MODEL": "claude-opus-5-5", "OVERVIEW_MAX_TURNS": "7"}
+        with mock.patch.object(remote, "load_dotenv"), mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(remote, "run_remote", return_value=0) as run:
+            code = remote.main(["github.com/org/repo", "--keep"])
+        self.assertEqual(code, 0)
+        source, args = run.call_args[0]
+        self.assertEqual(source, ("git", "https://github.com/org/repo"))
+        self.assertEqual((args.model, args.max_turns, args.max_tokens, args.out, args.keep),
+                         ("claude-opus-5-5", 7, 16000, "", True))
+
+
+class TemplateTests(unittest.TestCase):
+    def test_template_has_python_git_and_anthropic_and_no_secrets(self):
+        import e2b_template
+        from e2b import Template
+        dockerfile = Template.to_dockerfile(e2b_template.template())
+        self.assertIn("FROM python:3.12", dockerfile)
+        self.assertIn("install -y git", dockerfile)
+        self.assertIn("pip install anthropic", dockerfile)
+        self.assertNotIn("API_KEY", dockerfile)
+
+
 if __name__ == "__main__":
     unittest.main()

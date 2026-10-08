@@ -10,6 +10,7 @@ Build the sandbox template once first: python e2b_template.py
 """
 from __future__ import annotations
 
+import argparse
 import io
 import os
 import re
@@ -21,7 +22,7 @@ from typing import Tuple
 
 from e2b import CommandExitException, Sandbox, SandboxException, TimeoutException
 
-from agent import trace
+from agent import DEFAULT_MODEL, load_dotenv, trace
 from tools import OVERVIEW_NAME, is_ignored_dir, is_ignored_name
 
 HERE = Path(__file__).resolve().parent
@@ -170,3 +171,31 @@ def _run_in_sandbox(sbx, kind: str, where: str, tarball: bytes, out: Path, args)
 def _echo(chunk: str) -> None:
     """Stream the agent's trace as it arrives (E2B passes raw chunks, newlines included)."""
     print(chunk, end="", file=sys.stderr, flush=True)
+
+
+def main(argv=None) -> int:
+    load_dotenv()
+    env = os.environ.get
+    ap = argparse.ArgumentParser(
+        description="Write PROJECT_OVERVIEW.md for a repository, running the agent in an E2B sandbox.")
+    ap.add_argument("source", help="git URL (https://..., git@..., github.com/org/repo) or a local folder")
+    ap.add_argument("--model", default=env("OVERVIEW_MODEL", DEFAULT_MODEL))
+    ap.add_argument("--max-turns", type=int, default=int(env("OVERVIEW_MAX_TURNS", "25")))
+    ap.add_argument("--max-tokens", type=int, default=int(env("OVERVIEW_MAX_TOKENS", "16000")))
+    ap.add_argument("--out", default="", help="results folder (default: overviews/<repo-name>/ in this project)")
+    ap.add_argument("--keep", action="store_true", help="leave the sandbox running at the end, to inspect it")
+    args = ap.parse_args(argv)
+    try:
+        source = parse_source(args.source)
+    except RemoteError as e:
+        trace("error: %s" % e)
+        return 1
+    try:
+        return run_remote(source, args)
+    except KeyboardInterrupt:  # run_remote's `finally` has already killed the sandbox
+        trace("interrupted")
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
