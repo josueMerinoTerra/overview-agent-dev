@@ -1,7 +1,7 @@
 # Spec: run the agent remotely in an E2B sandbox
 
-Status: designed, not implemented · Baseline: `622c0fd` · Step 1 of 2 (step 2, porting to the Claude Agent SDK,
-gets its own spec)
+Status: implemented and measured · Baseline: `622c0fd` · Step 1 of 2 (step 2, porting to the Claude Agent SDK,
+gets its own spec) · Plan: `docs/superpowers/plans/2026-10-07-e2b-remote-run.md`
 
 ## Context
 `agent.py` runs only on the local machine: `RepoSandbox` is a folder jail on the local disk, and the overview is
@@ -36,10 +36,16 @@ only when dependencies change. **No secrets in the template:** no API key is set
 to it unchanged. `.env` is loaded with `agent.load_dotenv` (reused, not copied).
 
 Pure functions (offline-testable):
-- `parse_source(arg) -> ("git", url) | ("local", Path)`. Values starting with `https://`, `http://` or `git@`, or
-  ending in `.git`, are git. Anything else must be an existing directory, or the run exits with an error.
+- `parse_source(arg) -> ("git", url) | ("local", absolute path)`, checked in this order:
+  1. An SSH URL (`git@host:org/repo`, `ssh://git@host/org/repo`) is rewritten to `https://host/org/repo`, because
+     the sandbox has no SSH key.
+  2. A value starting with `https://` or `http://` is git.
+  3. An existing directory is local, even if its name looks like a repo (`x.git`).
+  4. A scheme-less `host.tld/path` (e.g. `github.com/org/repo`) is git, with `https://` prepended.
+  5. Anything else exits with an error.
 - `make_tarball(path) -> bytes`: a `.tar.gz` of the folder that **excludes exactly what the agent can't read**:
-  ignored dirs (`IGNORED_DIRS` and `.git*`) and ignored names (lockfiles, generated files, and secrets such as
+  ignored dirs (`IGNORED_DIRS`, which includes `.git`; `.github/` is uploaded because the agent can read it,
+  since `.git*` folders are hidden only from listings) and ignored names (lockfiles, generated files, and secrets such as
   `.env`, `.env.*`, `*.pem`, `*.key`, plus an existing `PROJECT_OVERVIEW.md`), including the expanded built-ins
   below. Symlinks are stored as links and never followed, so a symlink can't pull in a file from outside the
   folder.
@@ -48,7 +54,9 @@ Pure functions (offline-testable):
 
 `run_remote(source, args, sandbox_factory=Sandbox.create) -> int` does the I/O. The factory is a parameter so
 tests can inject a fake. Flow:
-1. Fail before creating a sandbox if `E2B_API_KEY` or `ANTHROPIC_API_KEY` is missing.
+1. Fail before creating a sandbox if `E2B_API_KEY` or `ANTHROPIC_API_KEY` is missing. Then create `output_dir`
+   and delete the previous run's `PROJECT_OVERVIEW.md` and `metrics.json` from it, so that an unusable `--out`
+   fails before anything is spent and no failure path can leave an old result looking new.
 2. Create a sandbox from template `overview-agent` with a 15-minute timeout.
 3. Upload `agent.py`, `tools.py` and `prompts/overview_agent.md` to `/home/user/agent/`.
 4. Get the repo to `/home/user/repo`:
@@ -59,8 +67,8 @@ tests can inject a fake. Flow:
    command only). Stream stderr (the trace) live to local stderr, and collect stdout (the summary). Set the
    command's own timeout explicitly to 14 minutes. E2B's per-command default is much shorter than an agent run,
    so it must not be left at the default.
-6. Download `/home/user/repo/PROJECT_OVERVIEW.md` (if written) and `/home/user/metrics.json` (if present) into
-   `output_dir`.
+6. Download `/home/user/repo/PROJECT_OVERVIEW.md` only if the agent exited 0 (a cloned repo can contain an old,
+   committed overview), and `/home/user/metrics.json` if present, into `output_dir`.
 7. Print the agent's summary, then the local paths of the downloaded files.
 8. In `finally`, kill the sandbox. This also covers Ctrl-C. `--keep` skips the kill and prints the sandbox id so
    you can inspect it while debugging.
@@ -74,18 +82,21 @@ Each failure prints one `error: …` line and exits non-zero. The sandbox is kil
 |---|---|
 | A key is missing | Exit before sandbox creation, so it costs nothing |
 | Local path isn't a directory | Exit before sandbox creation |
-| Template not found | `error: template overview-agent not built, run python e2b_template.py` |
-| `git clone` fails | Show git's stderr, exit 1 |
-| Agent exits non-zero | Still download `metrics.json` if present, pass the agent's exit code through |
+| `--out` unusable (a file, no permission) | `error: cannot use results folder …`, before sandbox creation |
+| E2B rejects the key | `error: E2B rejected the API key (check E2B_API_KEY): …` |
+| Sandbox can't start (e.g. template not built) | `error: could not start a sandbox … (did you run python e2b_template.py?): <SDK message>`. E2B has no distinct "template missing" error. |
+| `git clone` fails | Show git's stderr, exit 1. `GIT_TERMINAL_PROMPT=0`, so a private repo fails instead of hanging. |
+| Agent exits non-zero | Download `metrics.json` if present, never the overview, and pass the agent's exit code through |
 | Sandbox timeout | `error: sandbox timed out`, exit 1 |
+| Any other error (network, SDK) | `error: <message>`, exit 1, no traceback. Ctrl-C still stops the run and kills the sandbox. |
 
 ### Expanded built-in ignore lists (`tools.py`)
 Uploading a local folder adds a second destination for its files (E2B's servers, on top of the Anthropic API that
 already sees whatever the agent reads), so the built-in lists grow. Only patterns that are **never product code in
 any repo** qualify:
 - `IGNORED_FILE_PATTERNS`, secrets: `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `id_rsa*`, `id_ed25519*`, `*.kdbx`,
-  `.npmrc`, `.pypirc`, `.netrc`, `*.tfstate`, `*.tfstate.*`, `*.tfvars`, `credentials.json`,
-  `service-account*.json`
+  `.npmrc`, `.pypirc`, `.netrc`, `.envrc`, `.git-credentials`, `*.tfstate`, `*.tfstate.*`, `*.tfvars`,
+  `credentials.json`, `service-account*.json`. `.envrc` and `.git-credentials` were added after the code review.
 - `IGNORED_DIRS`, library and cache folders: `Pods`, `Carthage`, `bower_components`, `.gradle`, `.terraform`,
   `.tox`, `.mypy_cache`, `.pytest_cache`, `.dart_tool`
 
@@ -99,7 +110,8 @@ folders, so the overview shouldn't change. The measurement protocol checks this.
 
 ### Small edits
 - `tools.py`: move the ignore rules out of `RepoSandbox` into public module functions `is_ignored_dir(name)`
-  (`IGNORED_DIRS` or a `.git*` prefix) and `is_ignored_name(name)` (lockfiles and `IGNORED_FILE_PATTERNS`), so
+  (`IGNORED_DIRS`; `_walk` keeps its separate `.git*` listing rule) and `is_ignored_name(name)` (lockfiles and
+  `IGNORED_FILE_PATTERNS`), so
   `RepoSandbox` and `make_tarball` share one source of truth. Apart from the expanded lists above, this is a pure
   refactor, and `test_tools.py` still covers it.
 - `requirements.txt`: add `e2b`, pinned to the version the implementation is tested against (the E2B Python API
@@ -138,7 +150,7 @@ as a local run.
   `is_ignored_dir` / `is_ignored_name` agree with what `RepoSandbox` enforces.
 - `test_agent.py`: unchanged and passing.
 
-## Measurement protocol (to do)
+## Measurement protocol
 - **Runs:** one remote run on a local folder (`../dayNight`) and one on a small public GitHub repo, plus a local
   `agent.py` run on the same `dayNight` copy for comparison. All with the same model and limits.
 - **Metrics:** turns, tool calls, tool errors, `first_write_ok`, input, output and cache tokens (from
@@ -149,3 +161,31 @@ as a local run.
   wall time.
 - **Expanded ignore lists:** a local run on `dayNight` at baseline `622c0fd` vs this change gives an overview of
   the same quality, with the same Tier 3 files (or a different file only where the old one is now ignored).
+
+## Results (2026-10-08)
+One live run per row, `claude-sonnet-5-5`, default limits. Template `overview-agent` built in 50 s. Remote rows 1-2
+ran at `7dbd35f`; row 3 ran after the review fixes (`302d628`) and also exercises the SSH→https rewrite. Cost uses
+the Sonnet 5.5 list prices from `specs/conversation-caching.md` (Anthropic only; E2B sandbox time not included).
+
+| Run | Target | Turns | Tool calls (errors) | Out tokens | Cache write / read | Tier 3 | Agent time | End to end | Cost |
+|---|---|---|---|---|---|---|---|---|---|
+| 1. Remote, local folder | `dayNight` | 5 | 5 (1) | 1737 | 5959 / 14922 | 1 | 15.9 s | 27 s | $0.035 |
+| 2. Remote, git (`github.com/…`) | `is-odd` | 4 | 5 (0) | 1516 | 3538 / 14098 | 0 | 13.7 s | 23 s | $0.027 |
+| 3. Remote, git (`git@…`) | `is-odd` | 5 | 6 (0) | 1523 | 3673 / 17685 | 0 | 16.1 s | 25 s | $0.028 |
+| 4. Local, this branch | `dayNight` copy | 4 | 5 (1) | 1716 | 4847 / 14332 | 2 | 14.9 s | — | $0.032 |
+| 5. Local, baseline `622c0fd` | `dayNight` copy | 4 | 5 (0) | 1792 | 5049 / 14019 | 2 | 15.3 s | — | $0.033 |
+
+All five runs wrote a valid overview on the first write (`first_write_ok: true`). Uncached input was 10-12 tokens
+on every run, so conversation caching works inside the sandbox as it does locally.
+
+- **Remote matches local.** Turns, tokens and cost are within single-run variance of the local runs: same agent,
+  same prompt. The remote overhead (sandbox start, upload or clone, download) is about **10 s** per run.
+- **The local folder was untouched.** `ls -la ../dayNight` was identical before and after run 1.
+- **Expanded ignore lists:** baseline and this branch read the same Tier 3 files (`index.html`, `script.js`).
+  `dayNight` has no newly ignored files, so no difference was expected. The overviews are of equal quality: both
+  describe the same toggle, scenes, saved mode and dark-mode detection, with Low confidence on purpose and core
+  user. The single tool errors in runs 1 and 4 are the agent trying a `README.md` that `dayNight` doesn't have.
+- **Errors, checked live:** a bogus `E2B_API_KEY` prints `error: E2B rejected the API key …` and exits 1 with no
+  traceback. The SDK also prints its own `Response 401` line.
+- **Success criteria met:** both remote modes (local folder and git) write a valid overview, metrics match local
+  runs, and the only difference is wall-time overhead.
