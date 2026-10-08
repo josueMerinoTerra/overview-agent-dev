@@ -1,2 +1,3 @@
 anthropic
+claude-agent-sdk==0.2.164
 e2b==2.10.2
