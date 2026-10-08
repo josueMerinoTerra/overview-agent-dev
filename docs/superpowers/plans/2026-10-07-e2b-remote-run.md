@@ -1037,11 +1037,12 @@ Expected: build logs, then `Built template overview-agent`.
 
 - [ ] **Step 3: Remote run on a local folder**
 
-Make a fresh copy without `.git` or an old overview:
-`rsync -a --exclude .git --exclude PROJECT_OVERVIEW.md ../dayNight/ /tmp/dayNight-remote/`
-Run: `time .venv/bin/python remote.py /tmp/dayNight-remote`
-Expected: the live trace on stderr, then `Saved …/overviews/dayNight-remote/PROJECT_OVERVIEW.md` and
-`…/metrics.json`, exit 0. `/tmp/dayNight-remote` is unchanged (`ls` shows no `PROJECT_OVERVIEW.md`).
+No copy needed: a remote run never writes into the source folder, and the tarball already skips `.git/` and any
+existing `PROJECT_OVERVIEW.md`.
+Before: `ls -la ../dayNight > /tmp/before.txt`
+Run: `time .venv/bin/python remote.py ../dayNight`
+Expected: the live trace on stderr, then `Saved …/overviews/dayNight/PROJECT_OVERVIEW.md` and
+`…/metrics.json`, exit 0. `ls -la ../dayNight | diff /tmp/before.txt -` prints nothing (the folder is untouched).
 
 - [ ] **Step 4: Remote run on a small public GitHub repo** (the human picks it)
 
@@ -1050,7 +1051,15 @@ Expected: same output shape, results in `overviews/<repo>/`.
 
 - [ ] **Step 5: Local comparison runs**
 
-Make two more fresh copies (same rsync as Step 3, into `/tmp/dayNight-local` and `/tmp/dayNight-base`), then:
+A local run writes `PROJECT_OVERVIEW.md` into the folder it analyzes, so use two fresh copies without `.git` or
+an old overview:
+
+```bash
+rsync -a --exclude .git --exclude PROJECT_OVERVIEW.md ../dayNight/ /tmp/dayNight-local/
+rsync -a --exclude .git --exclude PROJECT_OVERVIEW.md ../dayNight/ /tmp/dayNight-base/
+```
+
+Then:
 
 ```bash
 # this branch
