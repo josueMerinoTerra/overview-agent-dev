@@ -20,7 +20,7 @@ import tarfile
 from pathlib import Path
 from typing import Tuple
 
-from e2b import CommandExitException, Sandbox, SandboxException, TimeoutException
+from e2b import AuthenticationException, CommandExitException, Sandbox, TimeoutException
 
 from agent import DEFAULT_MODEL, load_dotenv, trace
 from tools import OVERVIEW_NAME, is_ignored_dir, is_ignored_name
@@ -37,8 +37,10 @@ TARBALL = HOME + "/repo.tar.gz"
 METRICS = HOME + "/metrics.json"
 AGENT_FILES = ("agent.py", "tools.py", "prompts/overview_agent.md")
 
-URL_PREFIXES = ("https://", "http://", "git@", "ssh://")
+URL_PREFIXES = ("https://", "http://")
 HOST_PATH = re.compile(r"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+/[^/]")  # github.com/org/repo, without a scheme
+SSH_URL = re.compile(r"^(?:ssh://)?git@([^:/]+)[:/](.+)$")       # git@github.com:org/repo.git
+RESULT_FILES = (OVERVIEW_NAME, "metrics.json")
 
 
 class RemoteError(Exception):
@@ -47,6 +49,9 @@ class RemoteError(Exception):
 
 def parse_source(arg: str) -> Tuple[str, str]:
     """('git', url) or ('local', absolute path). An existing directory wins over a URL-looking name."""
+    ssh = SSH_URL.match(arg)
+    if ssh:  # the sandbox has no SSH key, so clone over https instead (public repos)
+        return "git", "https://%s/%s" % ssh.groups()
     if arg.startswith(URL_PREFIXES):
         return "git", arg
     path = Path(arg).expanduser()
@@ -99,6 +104,16 @@ def run_remote(source: Tuple[str, str], args, sandbox_factory=None) -> int:
     if missing:
         trace("error: %s not set (add it to .env)" % " and ".join(missing))
         return 1
+    # Clear the previous results before spending anything, so a failed run on any path can't leave an old
+    # overview looking like this run's, and an unusable --out fails now instead of after the agent ran.
+    out = output_dir(source, args.out)
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        for name in RESULT_FILES:
+            (out / name).unlink(missing_ok=True)
+    except OSError as e:
+        trace("error: cannot use results folder %s: %s" % (out, e))
+        return 1
     kind, where = source
     tarball = b""
     if kind == "local":
@@ -108,16 +123,19 @@ def run_remote(source: Tuple[str, str], args, sandbox_factory=None) -> int:
     factory = sandbox_factory or Sandbox.create
     try:
         sbx = factory(template=TEMPLATE, timeout=SANDBOX_TIMEOUT)
-    except SandboxException as e:
+    except AuthenticationException as e:
+        trace("error: E2B rejected the API key (check E2B_API_KEY): %s" % e)
+        return 1
+    except Exception as e:
         trace("error: could not start a sandbox from template '%s' (did you run python e2b_template.py?): %s"
               % (TEMPLATE, e))
         return 1
     try:
-        return _run_in_sandbox(sbx, kind, where, tarball, output_dir(source, args.out), args)
+        return _run_in_sandbox(sbx, kind, where, tarball, out, args)
     except TimeoutException:
         trace("error: sandbox timed out")
         return 1
-    except SandboxException as e:
+    except Exception as e:  # SandboxException, network errors: one line, not a traceback (Ctrl-C still propagates)
         trace("error: %s" % e)
         return 1
     finally:
@@ -153,12 +171,12 @@ def _run_in_sandbox(sbx, kind: str, where: str, tarball: bytes, out: Path, args)
     except CommandExitException as e:
         code, summary = e.exit_code, e.stdout
 
-    out.mkdir(parents=True, exist_ok=True)
+    downloads = [(METRICS, "metrics.json")]
+    if code == 0:  # only a successful run wrote a fresh overview; a cloned repo may carry an old committed one
+        downloads.insert(0, (REPO_DIR + "/" + OVERVIEW_NAME, OVERVIEW_NAME))
     saved = []
-    for remote_path, local_name in ((REPO_DIR + "/" + OVERVIEW_NAME, OVERVIEW_NAME), (METRICS, "metrics.json")):
+    for remote_path, local_name in downloads:
         local = out / local_name
-        if local.exists():
-            local.unlink()  # never leave a previous run's file looking like this run's result
         if sbx.files.exists(remote_path):
             local.write_bytes(bytes(sbx.files.read(remote_path, format="bytes")))
             saved.append(local)

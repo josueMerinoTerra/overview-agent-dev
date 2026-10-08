@@ -181,7 +181,7 @@ class ExpandedIgnoreTests(unittest.TestCase):
         for name in ("secrets", "src", "target", ".github"):
             self.assertFalse(is_ignored_dir(name), name)
         for name in (".env", ".env.local", "yarn.lock", "app.min.js", "id_rsa", "id_rsa.pub", "prod.tfvars",
-                     "service-account-prod.json", "credentials.json", ".npmrc"):
+                     "service-account-prod.json", "credentials.json", ".npmrc", ".envrc", ".git-credentials"):
             self.assertTrue(is_ignored_name(name), name)
         for name in ("README.md", "secrets-policy.md", "credentials.py", "package.json"):
             self.assertFalse(is_ignored_name(name), name)

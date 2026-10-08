@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from e2b import CommandExitException, SandboxException, TimeoutException
+from e2b import AuthenticationException, CommandExitException, SandboxException, TimeoutException
 
 import remote
 from tools import OVERVIEW_NAME
@@ -24,9 +24,12 @@ def tar_members(data: bytes):
 
 class SourceTests(unittest.TestCase):
     def test_urls_are_git(self):
-        for url in ("https://github.com/org/repo", "http://host/x.git", "git@github.com:org/repo.git",
-                    "ssh://git@host/r"):
+        for url in ("https://github.com/org/repo", "http://host/x.git"):
             self.assertEqual(remote.parse_source(url), ("git", url))
+
+    def test_ssh_urls_become_https_because_the_sandbox_has_no_ssh_key(self):
+        self.assertEqual(remote.parse_source("git@github.com:org/repo.git"), ("git", "https://github.com/org/repo.git"))
+        self.assertEqual(remote.parse_source("ssh://git@github.com/org/repo"), ("git", "https://github.com/org/repo"))
 
     def test_scheme_less_host_path_becomes_https(self):
         self.assertEqual(remote.parse_source("github.com/org/repo"), ("git", "https://github.com/org/repo"))
@@ -120,14 +123,17 @@ class FakeFiles:
 
 
 class FakeCommands:
-    def __init__(self, sbx, agent_exit=0, clone_fails=False, agent_times_out=False):
+    def __init__(self, sbx, agent_exit=0, clone_fails=False, agent_times_out=False, repo_has_overview=False):
         self.sbx, self.agent_exit, self.clone_fails, self.agent_times_out = sbx, agent_exit, clone_fails, agent_times_out
+        self.repo_has_overview = repo_has_overview
         self.runs = []
 
     def run(self, cmd, **kw):
         self.runs.append((cmd, kw))
         if cmd.startswith("git clone") and self.clone_fails:
             raise CommandExitException(stderr="fatal: repository not found", stdout="", exit_code=128, error=None)
+        if cmd.startswith("git clone") and self.repo_has_overview:  # an overview committed in the cloned repo
+            self.sbx.files.store[remote.REPO_DIR + "/" + OVERVIEW_NAME] = "# Old: Product Overview\n"
         if cmd.startswith("python agent.py"):
             if self.agent_times_out:
                 raise TimeoutException("command timed out")
@@ -276,6 +282,45 @@ class RunRemoteTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("python e2b_template.py", err.getvalue())
         self.assertIn("404", err.getvalue())
+
+    def test_overview_committed_in_the_cloned_repo_is_not_presented_when_the_agent_fails(self):
+        sbx = FakeSandbox(repo_has_overview=True, agent_exit=1)
+        code, out, _ = self.run_with(sbx)
+        self.assertEqual(code, 1)
+        self.assertFalse((self.out / OVERVIEW_NAME).exists())
+        self.assertNotIn("Saved %s" % (self.out / OVERVIEW_NAME), out)
+
+    def test_stale_results_are_cleared_even_when_the_agent_times_out(self):
+        self.out.mkdir(parents=True)
+        for name in (OVERVIEW_NAME, "metrics.json"):
+            (self.out / name).write_text("old run\n")
+        code, _, _ = self.run_with(FakeSandbox(agent_times_out=True))
+        self.assertEqual(code, 1)
+        self.assertEqual(list(self.out.iterdir()), [])
+
+    def test_unusable_out_folder_fails_before_creating_a_sandbox(self):
+        self.out.write_text("I am a file, not a folder\n")
+        code, _, err = self.run_with(FakeSandbox())
+        self.assertEqual(code, 1)
+        self.assertIn("error: cannot use results folder", err)
+        self.assertEqual(self.factory_calls, [])
+
+    def test_rejected_e2b_key_is_one_error_line(self):
+        def factory(**kwargs):
+            raise AuthenticationException("401: Unauthorized, please check your credentials.")
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, KEYS, clear=True), redirect_stderr(err):
+            code = remote.run_remote(("git", "https://h/x"), self.args, sandbox_factory=factory)
+        self.assertEqual(code, 1)
+        self.assertIn("error: E2B rejected the API key (check E2B_API_KEY)", err.getvalue())
+
+    def test_unexpected_error_inside_the_sandbox_is_one_error_line_and_kills_it(self):
+        sbx = FakeSandbox()
+        sbx.files.write = mock.Mock(side_effect=ConnectionError("connection reset"))
+        code, _, err = self.run_with(sbx)
+        self.assertEqual(code, 1)
+        self.assertIn("error: connection reset", err)
+        self.assertTrue(sbx.killed)
 
 
 class MainTests(unittest.TestCase):

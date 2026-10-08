@@ -37,7 +37,7 @@ IGNORED_FILE_PATTERNS = [
     "*.min.js", "*.min.css", "*.map", "*.generated.*", "*.pb.go", "*_pb2.py",
     ".env", ".env.*", "*.pem", "*.key", OVERVIEW_NAME,
     "*.p12", "*.pfx", "*.jks", "*.keystore", "id_rsa*", "id_ed25519*", "*.kdbx",
-    ".npmrc", ".pypirc", ".netrc", "*.tfstate", "*.tfstate.*", "*.tfvars",
+    ".npmrc", ".pypirc", ".netrc", ".envrc", ".git-credentials", "*.tfstate", "*.tfstate.*", "*.tfvars",
     "credentials.json", "service-account*.json",
 ]
 MANIFESTS = {
