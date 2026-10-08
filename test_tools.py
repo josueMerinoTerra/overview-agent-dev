@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools import OVERVIEW_NAME, RepoSandbox, ToolError
+from tools import OVERVIEW_NAME, RepoSandbox, ToolError, is_ignored_dir, is_ignored_name
 
 GOOD = """# Acme: Product Overview
 
@@ -148,6 +148,43 @@ class SandboxTests(unittest.TestCase):
             self.sb.call("rm", {})
         with self.assertRaises(ToolError):
             self.sb.call("find_files", {})
+
+
+class ExpandedIgnoreTests(unittest.TestCase):
+    """Secrets and library folders that are never product code, in any repo."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        for rel in ("README.md", "config/credentials.json", "infra/prod.tfstate", "certs/push.p12",
+                    "ios/Pods/Lib/lib.swift", "src/secrets/vault.py"):
+            p = self.root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x\n")
+        self.sb = RepoSandbox(str(self.root), log=lambda m: None)
+
+    def test_new_secrets_and_library_folders_are_refused(self):
+        for bad in ("config/credentials.json", "infra/prod.tfstate", "certs/push.p12", "ios/Pods/Lib/lib.swift"):
+            with self.assertRaises(ToolError, msg=bad):
+                self.sb.read_file(bad, 3, 1, "x")
+
+    def test_new_ignores_are_hidden_but_generic_names_stay_visible(self):
+        tree = self.sb.list_tree(".", 3)
+        self.assertNotIn("Pods", tree)
+        self.assertNotIn("credentials.json", tree)
+        self.assertIn("vault.py", tree)  # `secrets/` can be product code, so it is not built in
+
+    def test_public_helpers(self):
+        for name in ("node_modules", ".git", "Pods", ".terraform"):
+            self.assertTrue(is_ignored_dir(name), name)
+        for name in ("secrets", "src", "target", ".github"):
+            self.assertFalse(is_ignored_dir(name), name)
+        for name in (".env", ".env.local", "yarn.lock", "app.min.js", "id_rsa", "id_rsa.pub", "prod.tfvars",
+                     "service-account-prod.json", "credentials.json", ".npmrc"):
+            self.assertTrue(is_ignored_name(name), name)
+        for name in ("README.md", "secrets-policy.md", "credentials.py", "package.json"):
+            self.assertFalse(is_ignored_name(name), name)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,8 @@
 The model decides *what* to look at; this module enforces the hard rules from
 prompts/overview_agent.md in code, so a prompt slip can't break them:
 
-  * nothing is read inside node_modules/.git/dist/build/vendor, lockfiles or generated code
+  * nothing is read inside node_modules/.git/dist/build/vendor (and other library folders), lockfiles,
+    generated code or secrets (.env, keys, keystores, credentials files)
   * Tier 1 reads are limited to curated docs + manifests
   * Tier 3 reads are capped at 5 distinct files and 120 lines each
   * the only file that can ever be written is <repo>/PROJECT_OVERVIEW.md
@@ -22,15 +23,22 @@ OVERVIEW_NAME = "PROJECT_OVERVIEW.md"
 IGNORED_DIRS = {
     "node_modules", ".git", "dist", "build", "vendor",
     ".next", ".nuxt", ".venv", "venv", "__pycache__", "coverage", ".cache", ".idea",
+    # Library and cache folders of other ecosystems. Generic names (target, out, env, deps, secrets) are left
+    # out on purpose: in some repos they are product code.
+    "Pods", "Carthage", "bower_components", ".gradle", ".terraform", ".tox", ".mypy_cache", ".pytest_cache",
+    ".dart_tool",
 }
 LOCKFILES = {
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "poetry.lock",
     "Pipfile.lock", "Cargo.lock", "composer.lock", "go.sum", "Gemfile.lock",
 }
-# Generated code, plus secrets: the agent has no business reading credentials.
+# Generated code, plus secrets: the agent has no business reading credentials, and remote.py never uploads them.
 IGNORED_FILE_PATTERNS = [
     "*.min.js", "*.min.css", "*.map", "*.generated.*", "*.pb.go", "*_pb2.py",
     ".env", ".env.*", "*.pem", "*.key", OVERVIEW_NAME,
+    "*.p12", "*.pfx", "*.jks", "*.keystore", "id_rsa*", "id_ed25519*", "*.kdbx",
+    ".npmrc", ".pypirc", ".netrc", "*.tfstate", "*.tfstate.*", "*.tfvars",
+    "credentials.json", "service-account*.json",
 ]
 MANIFESTS = {
     "package.json", "pyproject.toml", "setup.cfg", "setup.py", "Cargo.toml",
@@ -57,6 +65,16 @@ MAX_WORDS = 700  # the prompt says "under ~600"; 600-700 passes with a warning.
 SOFT_WORDS = 600
 
 
+def is_ignored_dir(name: str) -> bool:
+    """A folder the agent never enters and remote.py never uploads."""
+    return name in IGNORED_DIRS
+
+
+def is_ignored_name(name: str) -> bool:
+    """A file the agent never reads and remote.py never uploads: lockfiles, generated code, secrets."""
+    return name in LOCKFILES or any(fnmatch.fnmatch(name, pat) for pat in IGNORED_FILE_PATTERNS)
+
+
 class ToolError(Exception):
     """A problem the model can read and recover from (returned as is_error)."""
 
@@ -75,20 +93,11 @@ class RepoSandbox:
         self.overview_written = False
 
     # ------------------------------------------------------------------ paths
-    @staticmethod
-    def _name_ignored(name: str) -> bool:
-        return (
-            name in LOCKFILES
-            or any(fnmatch.fnmatch(name, pat) for pat in IGNORED_FILE_PATTERNS)
-        )
-
     def _rel_ignored(self, rel: Path) -> bool:
         parts = rel.parts
-        if any(p in IGNORED_DIRS for p in parts[:-1]):
+        if any(is_ignored_dir(p) for p in parts):
             return True
-        if parts and parts[-1] in IGNORED_DIRS:
-            return True
-        return bool(parts) and self._name_ignored(parts[-1])
+        return bool(parts) and is_ignored_name(parts[-1])
 
     def _resolve(self, rel: str) -> Path:
         """Resolve a repo-relative path, refusing escapes and ignored locations."""
@@ -103,9 +112,9 @@ class RepoSandbox:
         """Yield (dirpath, dirnames, filenames) with ignored entries pruned, in stable order."""
         for dirpath, dirnames, filenames in os.walk(str(start)):
             dirnames[:] = sorted(
-                d for d in dirnames if d not in IGNORED_DIRS and not d.startswith(".git")
+                d for d in dirnames if not is_ignored_dir(d) and not d.startswith(".git")
             )
-            filenames = sorted(f for f in filenames if not self._name_ignored(f))
+            filenames = sorted(f for f in filenames if not is_ignored_name(f))
             yield Path(dirpath), dirnames, filenames
 
     def _relposix(self, p: Path) -> str:
