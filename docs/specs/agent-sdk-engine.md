@@ -1,6 +1,6 @@
 # Spec: a second engine on the Claude Agent SDK, benchmarked against the API loop
 
-Status: approved design, not implemented · Baseline: `0c57003` · Step 2 of 2 (step 1:
+Status: approved design, not implemented · Baseline: `0c57003` · Plan: `docs/plans/2026-10-08-agent-sdk-engine.md` · Step 2 of 2 (step 1:
 `docs/specs/e2b-remote-run.md`)
 
 ## Context
@@ -48,24 +48,29 @@ Agent SDK facts this design relies on (code.claude.com/docs/en/agent-sdk, `claud
   `ToolRecorder` (below). A `ToolError` becomes `is_error: True` with the error text; any other exception does
   too, with the same message format as the `api` engine. Served as `mcp_servers={"overview": server}`.
 - **Options** (`ClaudeAgentOptions`):
-  - `system_prompt=load_instructions()` (the same `prompts/overview_agent.md`; the file form if the string is too
-    long for the command line)
-  - `model`, `max_turns`, `max_budget_usd=0.50`
-  - `tools=[]`, `allowed_tools=["mcp__overview__*"]`, `permission_mode="dontAsk"`
+  - `system_prompt=load_instructions()` (the same `prompts/overview_agent.md`, about 3.5 KB)
+  - `model`, `max_turns`, `max_budget_usd=0.50`, `effort="high"` (the Messages API default for
+    `claude-sonnet-5-5`, which the `api` engine gets by not setting it)
+  - `tools=[]`, `allowed_tools` = the five tool names spelled out (`mcp__overview__list_tree`, …),
+    `permission_mode="dontAsk"`
   - `setting_sources=[]`, `strict_mcp_config=True`
   - `env`: `CLAUDE_CONFIG_DIR=<fresh temp dir>`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`,
-    `ENABLE_CLAUDEAI_MCP_SERVERS=false`, and tool search off
+    `ENABLE_CLAUDEAI_MCP_SERVERS=false`, `ENABLE_TOOL_SEARCH=false`
   - `cwd=<the same temp dir>`, never the target repo
-  
-  Tool search is off so both engines see every tool schema from turn 1. The exact switch is confirmed during
-  implementation; if there is none, the spec records the difference instead.
+
+  Tool search is off so both engines see every tool schema from turn 1 (`ENABLE_TOOL_SEARCH=false`, confirmed in
+  the bundled CLI).
 - **Flow.** `ClaudeSDKClient`: send the same first user message as the `api` engine, read until the
   `ResultMessage`. If `sandbox.overview_written` is still false, send the same one-time reminder and read again.
-- **Metrics.** The same keys as the `api` engine plus `engine`. `turns` and the four token counts are summed over
-  the one or two `ResultMessage`s. `wall_seconds` is measured by us, as in `agent.py`. Recorder fields come from
-  the shared `ToolRecorder`.
-- **Errors.** An `error_*` result subtype, or an exception from the SDK, prints one `error: …` line and exits 1.
-  `error_max_turns` and `error_max_budget_usd` name the limit that was hit. Metrics are still written.
+- **Metrics.** The same keys as the `api` engine (`engine` included), plus `sdk_cost_usd`. `turns` and the four
+  token counts are summed over the one or two `ResultMessage`s. `wall_seconds` is measured by us, as in
+  `agent.py`. Recorder fields come from the shared `ToolRecorder`. Two counts only this engine can produce:
+  `schema_rejected_calls` (tool calls the SDK's own schema check answered before they reached `RepoSandbox`) and
+  `denied_calls` (`permission_denials`). The `api` engine reports both as 0.
+- **Limits and errors.** Hitting `error_max_turns` or `error_max_budget_usd` prints a warning naming the limit and
+  skips the reminder; as in the `api` engine, the exit code then depends on whether the overview was written. Any
+  other `error_*` subtype, or a `ClaudeSDKError`, prints one `error: …` line and exits 1. Metrics are written in
+  every case.
 
 Known differences, recorded rather than fixed:
 - The prompt says `write_overview`; this engine's model sees `mcp__overview__write_overview`. The prompt is left
@@ -73,11 +78,15 @@ Known differences, recorded rather than fixed:
 - `--max-tokens` doesn't apply to this engine (no such option).
 - Caching is the SDK's own, not our two breakpoints.
 
-### New: `overview_agent/recorder.py`, `ToolRecorder`
-`agent.py` counts tool calls inline today. That code moves into a small class that both engines use, so behavior
+### New: `overview_agent/task.py` and `overview_agent/recorder.py`
+What both engines share moves out of `agent.py` (no module may import `agent` except `main.py`):
+- `task.py`: `load_instructions()`, the first user message and the reminder.
+- `recorder.py`: `finish_run(...)`, the end-of-run summary, metrics file and exit code, and `ToolRecorder`.
+
+`agent.py` counts tool calls inline today. That code moves into `ToolRecorder`, which both engines use, so behavior
 counts are computed by the same code:
-- `call(sandbox, name, args) -> (output, is_error)`, which wraps `sandbox.call` and catches errors as `agent.py`
-  does today
+- `call(name, args) -> (output, is_error)`, which wraps `sandbox.call` and catches errors as `agent.py` does
+  today
 - counters: `tool_calls`, `tool_errors`, `write_attempts`, `first_write_ok` (as today), plus
   `duplicate_calls` (same tool with the same arguments as an earlier call in the run, compared via sorted JSON)
   and `rejected_calls` (a `ToolError` from `RepoSandbox`: ignored file, Tier 3 budget, invalid overview)
@@ -91,8 +100,9 @@ counters to its metrics.
 - New `bench` subcommand (below).
 
 ### `overview_agent/e2b_template.py`
-Add `pip_install("claude-agent-sdk")`. Rebuild once with `python main.py build-template`. The sandbox runs as a
-normal user, and `dontAsk` doesn't need root.
+Add `pip_install("claude-agent-sdk==0.2.164")`, the same pin as `requirements.txt` (a test checks), and raise the
+sandbox to 2 GB RAM, since the SDK runs the bundled Claude Code CLI next to Python. Rebuild once with
+`python main.py build-template`. The sandbox runs as a normal user, and `dontAsk` doesn't need root.
 
 ### New: `overview_agent/judge.py`
 `judge(overview, digest, client) -> dict`: one Messages API call that scores one overview.
@@ -117,8 +127,9 @@ Runs the matrix, judges the results and writes the report. Results go to `bench/
   files. E2B runs use `remote.run_remote` with the local path.
 - **Per run:** `bench/<ts>/<env>/<engine>/run-N/` holds `PROJECT_OVERVIEW.md`, `metrics.json`, the trace
   (`trace.log`), `judge.json`, and for E2B the end-to-end seconds.
-- **Resume.** A run whose `metrics.json` exists is skipped, so a crash never pays for the same run twice. Pass the
-  same `--out bench/<ts>` to resume.
+- **Resume.** A run that finished with exit code 0 (recorded in its `bench.json`) is skipped, so a crash never
+  pays for the same run twice. A failed run is re-run; its earlier attempt is kept as `run-N.failed-<time>` and
+  its cost still counts toward the spend guard. Pass the same `--out bench/<ts>` to resume.
 - **Spend guard.** Before each run, the bench prices what it has spent so far and stops if the total would pass
   `--max-usd` (default 3.00).
 - **Pricing.** Sonnet 5.5 list prices per M tokens: $2 input, $10 output, $2.50 cache write, $0.20 cache read (as in
@@ -131,7 +142,10 @@ Runs the matrix, judges the results and writes the report. Results go to `bench/
   score, for the human spot check.
 
 ### Small edits
-- `requirements.txt`: add `claude-agent-sdk`, pinned to the tested version.
+- **Python 3.12.** `claude-agent-sdk` needs Python 3.10+, and the project venv was Python 3.9.6, so the venv is
+  recreated on Python 3.12 (Homebrew `python@3.12`).
+- `requirements.txt`: add `claude-agent-sdk==0.2.164`.
+- `.env.example`: add `OVERVIEW_ENGINE=api`.
 - `.gitignore`: add `bench/`.
 - `README.md`: an "Engines" section (what each one is, the flag, what `bench` does and roughly what it costs).
 - `CLAUDE.md`: under "Where responsibilities live", add `sdk_agent.py`, `recorder.py`, `judge.py` and `bench.py`,
