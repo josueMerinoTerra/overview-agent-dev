@@ -1,4 +1,4 @@
-"""Offline tests for the sandbox rules in tools.py (no API key needed)."""
+"""Offline tests for the sandbox rules in overview_agent/sandbox.py (no API key needed)."""
 from __future__ import annotations
 
 import os
@@ -6,7 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from overview_agent.tools import OVERVIEW_NAME, RepoSandbox, ToolError, is_ignored_dir, is_ignored_name
+from overview_agent.ignore_rules import is_ignored_dir, is_ignored_name
+from overview_agent.overview_format import OVERVIEW_NAME
+from overview_agent.sandbox import RepoSandbox, ToolError
 
 GOOD = """# Acme: Product Overview
 

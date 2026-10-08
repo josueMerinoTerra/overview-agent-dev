@@ -19,7 +19,8 @@ from typing import List, Tuple
 from e2b import AuthenticationException, CommandExitException, Sandbox, TimeoutException
 
 from overview_agent.config import PROJECT_ROOT, trace
-from overview_agent.tools import OVERVIEW_NAME, is_ignored_dir, is_ignored_name
+from overview_agent.ignore_rules import is_ignored_dir, is_ignored_name
+from overview_agent.overview_format import OVERVIEW_NAME
 
 AGENT_PACKAGE = "overview_agent"
 AGENT_SUFFIXES = (".py", ".md")  # code and prompts; never caches or OS files like .DS_Store

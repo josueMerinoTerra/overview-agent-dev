@@ -18,28 +18,9 @@ import sys
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-OVERVIEW_NAME = "PROJECT_OVERVIEW.md"
+from overview_agent.ignore_rules import is_ignored_dir, is_ignored_name
+from overview_agent.overview_format import OVERVIEW_NAME, validate_overview
 
-IGNORED_DIRS = {
-    "node_modules", ".git", "dist", "build", "vendor",
-    ".next", ".nuxt", ".venv", "venv", "__pycache__", "coverage", ".cache", ".idea",
-    # Library and cache folders of other ecosystems. Generic names (target, out, env, deps, secrets) are left
-    # out on purpose: in some repos they are product code.
-    "Pods", "Carthage", "bower_components", ".gradle", ".terraform", ".tox", ".mypy_cache", ".pytest_cache",
-    ".dart_tool",
-}
-LOCKFILES = {
-    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "poetry.lock",
-    "Pipfile.lock", "Cargo.lock", "composer.lock", "go.sum", "Gemfile.lock",
-}
-# Generated code, plus secrets: the agent has no business reading credentials, and remote.py never uploads them.
-IGNORED_FILE_PATTERNS = [
-    "*.min.js", "*.min.css", "*.map", "*.generated.*", "*.pb.go", "*_pb2.py",
-    ".env", ".env.*", "*.pem", "*.key", OVERVIEW_NAME,
-    "*.p12", "*.pfx", "*.jks", "*.keystore", "id_rsa*", "id_ed25519*", "*.kdbx",
-    ".npmrc", ".pypirc", ".netrc", ".envrc", ".git-credentials", "*.tfstate", "*.tfstate.*", "*.tfvars",
-    "credentials.json", "service-account*.json",
-]
 MANIFESTS = {
     "package.json", "pyproject.toml", "setup.cfg", "setup.py", "Cargo.toml",
     "composer.json", "go.mod", "Gemfile", "pom.xml",
@@ -52,27 +33,6 @@ TIER3_MAX_FILES = 5
 TREE_MAX_ENTRIES = 300
 MAX_SCAN_FILES = 20000
 MAX_GREP_FILE_BYTES = 1_000_000
-
-REQUIRED_HEADINGS = [
-    "In one sentence",
-    "Problem & core user",
-    "Key features",
-    "Main user workflow",
-    "Evidence & confidence",
-    "Open questions",
-]
-MAX_WORDS = 700  # the prompt says "under ~600"; 600-700 passes with a warning.
-SOFT_WORDS = 600
-
-
-def is_ignored_dir(name: str) -> bool:
-    """A folder the agent never enters and remote.py never uploads."""
-    return name in IGNORED_DIRS
-
-
-def is_ignored_name(name: str) -> bool:
-    """A file the agent never reads and remote.py never uploads: lockfiles, generated code, secrets."""
-    return name in LOCKFILES or any(fnmatch.fnmatch(name, pat) for pat in IGNORED_FILE_PATTERNS)
 
 
 class ToolError(Exception):
@@ -262,7 +222,7 @@ class RepoSandbox:
 
     # -------------------------------------------------------------------- write
     def write_overview(self, content: str) -> str:
-        errors, warnings = self._validate_overview(content)
+        errors, warnings = validate_overview(content, self._cited_path_problem)
         if errors:
             raise ToolError(
                 "PROJECT_OVERVIEW.md was NOT written. Fix these and call write_overview again:\n- "
@@ -277,63 +237,14 @@ class RepoSandbox:
             msg += "\nWarnings (fix and rewrite if they point at a real problem):\n- " + "\n- ".join(warnings)
         return msg
 
-    def _validate_overview(self, content: str):
-        errors: List[str] = []
-        warnings: List[str] = []
-
-        first = next((l for l in content.splitlines() if l.strip()), "")
-        if not re.match(r"^# .+: Product Overview\s*$", first):
-            errors.append("first line must be '# <Project name>: Product Overview'")
-
-        headings = re.findall(r"^## (.+?)\s*$", content, flags=re.M)
-        if headings != REQUIRED_HEADINGS:
-            errors.append(
-                "the '## ' headings must be exactly, in order: %s (found: %s)"
-                % (REQUIRED_HEADINGS, headings)
-            )
-            return errors, warnings  # section checks below depend on the headings
-
-        sections = self._sections(content)
-        words = len(content.split())
-        if words > MAX_WORDS:
-            errors.append("%d words; must be under ~600 (hard limit %d). Cut it down." % (words, MAX_WORDS))
-        elif words > SOFT_WORDS:
-            warnings.append("%d words; target is under ~600." % words)
-
-        bullets = [l for l in sections["Key features"].splitlines() if re.match(r"^[-*] ", l)]
-        if not bullets:
-            errors.append("'Key features' needs bullet points ('- feature — what it lets the user do')")
-        elif len(bullets) > 7:
-            errors.append("'Key features' has %d bullets; maximum is 7" % len(bullets))
-        elif len(bullets) < 3:
-            warnings.append("'Key features' has %d bullets (expected 3-7); acceptable only if the repo gives no more evidence" % len(bullets))
-
-        steps = [l for l in sections["Main user workflow"].splitlines() if re.match(r"^\d+[.)] ", l)]
-        if not steps:
-            errors.append("'Main user workflow' must be a numbered list of user steps")
-        elif len(steps) < 3:
-            warnings.append("'Main user workflow' has %d steps; confirm that is the whole journey" % len(steps))
-
-        if not sections["Open questions"].strip():
-            errors.append("'Open questions' must not be empty (write 'None' only if truly nothing is unclear)")
-        if len(re.findall(r"\b(?:High|Medium|Low)\b", sections["Evidence & confidence"])) < 3:
-            errors.append("'Evidence & confidence' needs a High/Medium/Low rating for each of: problem & core user, key features, main workflow")
-
-        # Grounding: every file cited in backticks under Evidence should exist.
-        for token in sorted(set(re.findall(r"`([^`\n]+)`", sections["Evidence & confidence"]))):
-            if not re.search(r"[/.]", token) or re.search(r"[*?\[\s]", token):
-                continue
-            try:
-                if not self._resolve(token.rstrip("/")).exists():
-                    warnings.append("cited path not found in repo: `%s` (remove it or fix the name)" % token)
-            except ToolError:
-                warnings.append("cited path is off-limits or outside the repo: `%s`" % token)
-        return errors, warnings
-
-    @staticmethod
-    def _sections(content: str) -> Dict[str, str]:
-        parts = re.split(r"^## (.+?)\s*$", content, flags=re.M)
-        return {parts[i]: parts[i + 1] for i in range(1, len(parts) - 1, 2)}
+    def _cited_path_problem(self, token: str) -> Optional[str]:
+        """A warning if a path cited as evidence is missing or off-limits, else None."""
+        try:
+            if not self._resolve(token.rstrip("/")).exists():
+                return "cited path not found in repo: `%s` (remove it or fix the name)" % token
+        except ToolError:
+            return "cited path is off-limits or outside the repo: `%s`" % token
+        return None
 
     # ----------------------------------------------------------------- dispatch
     def call(self, name: str, args: dict) -> str:
@@ -351,87 +262,3 @@ class RepoSandbox:
         except KeyError as e:
             raise ToolError("missing required argument: %s" % e)
         raise ToolError("unknown tool: %s" % name)
-
-
-TOOLS = [
-    {
-        "name": "list_tree",
-        "description": (
-            "List file and folder NAMES (never contents) under a directory, up to 3 levels deep. "
-            "Ignored folders, lockfiles and generated files are already excluded. Use for the Tier 1 "
-            "top-level layout and Tier 2 feature/domain folders."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Directory relative to the repo root. Default '.'"},
-                "max_depth": {"type": "integer", "description": "1-3. Default 2"},
-            },
-        },
-    },
-    {
-        "name": "find_files",
-        "description": (
-            "Find file NAMES whose repo-relative path matches a case-insensitive glob such as "
-            "'*route*', '*model*', '*migration*', '*.spec.*', '*pages*'. Returns up to 40 paths, no contents. Tier 2."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "glob": {"type": "string"},
-                "limit": {"type": "integer", "description": "max results, up to 40"},
-            },
-            "required": ["glob"],
-        },
-    },
-    {
-        "name": "grep",
-        "description": (
-            "Regex search returning ONLY the matched fragments with file:line (like grep -o), up to 30. "
-            "Intended for Tier 2 signals such as test titles: pattern \"describe\\(['\\\"][^'\\\"]+\" "
-            "with glob '*.test.*'. Do not use it to read code."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string"},
-                "glob": {"type": "string", "description": "path glob filter, default '*'"},
-                "limit": {"type": "integer"},
-            },
-            "required": ["pattern"],
-        },
-    },
-    {
-        "name": "read_file",
-        "description": (
-            "Read the start of a file. Tier 1 (free): README*, CONTRIBUTING*, top-level *.md, docs/ index files, "
-            "and manifests (package.json, pyproject.toml, ...), first 300 lines. Tier 3 (budgeted): any other "
-            "non-ignored text file, first 120 lines, at most 5 distinct files for the whole run; requires `question` "
-            "(1=purpose & core user, 2=key features, 3=main workflow) and a `reason` naming the gap Tiers 1-2 left. "
-            "Do not use Tier 3 to read entry points like index.js/main.py."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "tier": {"type": "integer", "enum": [1, 3]},
-                "question": {"type": "integer", "enum": [1, 2, 3], "description": "Required for tier 3"},
-                "reason": {"type": "string", "description": "Required for tier 3"},
-            },
-            "required": ["path", "tier"],
-        },
-    },
-    {
-        "name": "write_overview",
-        "description": (
-            "Write PROJECT_OVERVIEW.md at the repo root (the only file you may write). The content is validated "
-            "against the required template; on failure nothing is written and the errors are returned so you can fix "
-            "and call again. Call this when all three questions are answered or the budget is spent."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {"content": {"type": "string", "description": "Full markdown of the overview"}},
-            "required": ["content"],
-        },
-    },
-]

@@ -13,7 +13,9 @@ from pathlib import Path
 import anthropic
 
 from overview_agent.config import trace
-from overview_agent.tools import OVERVIEW_NAME, TIER3_MAX_FILES, TOOLS, RepoSandbox, ToolError
+from overview_agent.overview_format import OVERVIEW_NAME
+from overview_agent.sandbox import TIER3_MAX_FILES, RepoSandbox, ToolError
+from overview_agent.tool_schemas import TOOLS
 
 
 def load_instructions() -> str:

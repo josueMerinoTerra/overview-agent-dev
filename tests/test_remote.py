@@ -14,7 +14,7 @@ from unittest import mock
 from e2b import AuthenticationException, CommandExitException, SandboxException, TimeoutException
 
 from overview_agent import config, remote
-from overview_agent.tools import OVERVIEW_NAME
+from overview_agent.overview_format import OVERVIEW_NAME
 
 
 def tar_members(data: bytes):
