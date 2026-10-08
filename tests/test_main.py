@@ -94,6 +94,18 @@ class RemoteCommandTests(unittest.TestCase):
         self.assertIn("interrupted", err.getvalue())
 
 
+class BenchCommandTests(unittest.TestCase):
+    def test_bench_flags_reach_run_bench(self):
+        from overview_agent import bench
+        with mock.patch.object(main, "load_dotenv"), mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(bench, "run_bench", return_value=0) as run:
+            code = main.main(["bench", "/tmp/terra", "--max-usd", "2", "--out", "bench/x"])
+        self.assertEqual(code, 0)
+        repo, args = run.call_args[0]
+        self.assertEqual((repo, args.max_usd, args.out, args.model, args.max_turns),
+                         ("/tmp/terra", 2.0, "bench/x", DEFAULT_MODEL, 25))
+
+
 class BuildTemplateCommandTests(unittest.TestCase):
     def test_build_template_builds_once(self):
         with mock.patch.object(main, "load_dotenv"), mock.patch.object(e2b_template, "build") as build:

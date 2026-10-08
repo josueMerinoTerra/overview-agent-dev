@@ -6,11 +6,13 @@ Usage:
                        [--metrics-json PATH]
   python main.py remote <git-url | local-path> [--engine api|agent-sdk] [--model M] [--max-turns N]
                         [--max-tokens N] [--out DIR] [--keep]
+  python main.py bench <local-path> [--model M] [--max-turns N] [--out DIR] [--max-usd X]
   python main.py build-template
 
 `local` runs the agent on this machine and writes into the repo. `remote` runs the same agent in an E2B sandbox
 and downloads the results into overviews/<repo-name>/. `build-template` builds that sandbox image (once).
-`--engine` picks who runs the loop: our Messages API loop (api) or the Claude Agent SDK (agent-sdk).
+`--engine` picks who runs the loop: our Messages API loop (api) or the Claude Agent SDK (agent-sdk). `bench` runs
+both engines on one repo, locally and in E2B, judges the overviews and writes bench/<timestamp>/summary.md.
 """
 from __future__ import annotations
 
@@ -53,6 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
     remote.add_argument("--keep", action="store_true", help="leave the sandbox running at the end, to inspect it")
     remote.set_defaults(handler=run_remote)
 
+    bench = commands.add_parser(
+        "bench", parents=[shared], help="benchmark both engines on one repo (8 runs, about $2)",
+        description="Run both engines on one local repo (1 local + 3 E2B runs each), judge the overviews, "
+                    "and write bench/<timestamp>/summary.md.")
+    bench.add_argument("repo", help="local repository folder (never written: runs use a filtered copy)")
+    bench.add_argument("--out", default="",
+                       help="results folder; pass an earlier one to resume (default: bench/<timestamp>/)")
+    bench.add_argument("--max-usd", type=float, default=3.0,
+                       help="stop before the estimated spend passes this (default 3.00)")
+    bench.set_defaults(handler=run_bench)
+
     template = commands.add_parser("build-template", help="build the E2B sandbox template (once)")
     template.set_defaults(handler=build_template)
     return parser
@@ -85,6 +98,16 @@ def run_remote(args: argparse.Namespace) -> int:
         return remote.run_remote(source, args)
     except KeyboardInterrupt:  # run_remote's `finally` has already killed the sandbox
         trace("interrupted")
+        return 130
+
+
+def run_bench(args: argparse.Namespace) -> int:
+    from overview_agent import bench  # imports remote (e2b) lazily, like the remote command
+
+    try:
+        return bench.run_bench(args.repo, args)
+    except KeyboardInterrupt:
+        trace("interrupted; resume with --out pointing at the same folder")
         return 130
 
 
