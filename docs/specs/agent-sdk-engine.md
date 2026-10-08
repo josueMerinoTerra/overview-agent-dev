@@ -1,6 +1,6 @@
 # Spec: a second engine on the Claude Agent SDK, benchmarked against the API loop
 
-Status: approved design, not implemented · Baseline: `0c57003` · Plan: `docs/plans/2026-10-08-agent-sdk-engine.md` · Step 2 of 2 (step 1:
+Status: implemented and measured · Baseline: `0c57003` · Plan: `docs/plans/2026-10-08-agent-sdk-engine.md` · Step 2 of 2 (step 1:
 `docs/specs/e2b-remote-run.md`)
 
 ## Context
@@ -213,5 +213,75 @@ All offline, with fakes:
   fail with a recorded reason, the judge's scores agree with the spot check, and the Results section states which
   engine is better on each question and by how much.
 
-## Results
-Pending.
+## Results (2026-10-08)
+`python main.py bench /Users/josue.merino/Projects/terra-agents-backend --out bench/2026-10-08-terra`, run at
+`b7429fc`: 8 runs, all finished, all judged. `claude-sonnet-5-5`, `--max-turns 25`. Total spend **$1.26** (agents
+and judge), plus a $0.04 local `agent-sdk` pilot on `dayNight`. Each cell is the median with the [min–max]
+range. The local column is each engine's single, cold-cache run.
+
+| Metric | local · api | local · agent-sdk | E2B · api | E2B · agent-sdk |
+|---|---|---|---|---|
+| Turns | 6 | 14 | 6 [5–6] | 15 [12–16] |
+| Tool calls | 7 | 13 | 8 [6–9] | 14 [11–15] |
+| Tool errors | 2 | 2 | 2 [1–2] | 1 [1–2] |
+| Duplicate calls | 0 | 0 | 0 [0–0] | 0 [0–0] |
+| Rejected by RepoSandbox | 2 | 2 | 2 [1–2] | 1 [1–2] |
+| Answered by the SDK (bad args, unknown tool) | 0 | 0 | 0 [0–0] | 0 [0–0] |
+| Denied (permission) | 0 | 0 | 0 [0–0] | 0 [0–0] |
+| Write attempts | 2 | 2 | 2 [2–2] | 2 [2–2] |
+| Input, uncached | 14 | 18 | 14 [12–14] | 18 [14–18] |
+| Cache write | 35911 | 26182 | 16317 [10404–34676] | 26502 [20289–26977] |
+| Cache read | 122834 | 125021 | 119281 [105336–159411] | 123606 [74728–132310] |
+| Output tokens | 4332 | 5123 | 4311 [4242–4616] | 5339 [5051–5379] |
+| Cost (USD) | $0.158 | $0.142 | $0.119 [$0.093–$0.150] | $0.145 [$0.116–$0.147] |
+| Agent seconds | 32.5 | 42.0 | 32.1 [31.0–33.6] | 50.6 [42.2–54.2] |
+| End-to-end seconds | 33.7 | 43.6 | 44.9 [44.0–45.2] | 64.3 [55.6–70.3] |
+| Judge: accuracy | 4 | 3 | 4 [4–4] | 3 [3–4] |
+| Judge: coverage | 4 | 3 | 5 [4–5] | 3 [3–4] |
+| Judge: what-not-how | 4 | 4 | 4 [4–4] | 4 [3–4] |
+| Judge: clarity | 4 | 4 | 4 [4–5] | 4 [3–4] |
+| Judge: total (of 20) | 16 | 14 | 17 [16–18] | 14 [12–16] |
+| First write accepted | 0/1 | 0/1 | 0/3 | 0/3 |
+
+**The main finding is a harness effect, not a model effect.** The Claude Code CLI under the Agent SDK keeps an MCP
+tool result inline only up to 50,000 characters (`rF=50000` in the bundled CLI 2.1.292). Above that it saves the
+result to a file and shows the model a preview. Terra's `README.md` comes back from `read_file` (Tier 1, 300 lines)
+as 55,523 characters, so the `agent-sdk` agent never saw most of it, including the Client Pulse tool table at line
+271. One run says so itself: "The README was too large to read in full, so I only saw its first part and its
+headings." The `api` engine sends the full 55 KB. Every difference below traces back to this.
+
+- **Cost:** about even. Cold: `agent-sdk` $0.142 vs `api` $0.158. Warm (E2B): `agent-sdk` $0.145 vs `api` $0.119,
+  so `agent-sdk` costs **22% more** per warm run. It has more turns but a smaller README in context, so each turn
+  is cheaper. Caching works in both: uncached input is 12–18 tokens per run. The CLI also makes one small Haiku 4.5
+  call per run (about 900 input tokens, about $0.001). It is in `model_usage` and `sdk_cost_usd` but not in the
+  bench's cost column.
+- **Speed:** `api` is faster. Agent time is 32 s vs 42–51 s (**+57%** on E2B medians), and end-to-end on E2B is
+  45 s vs 64 s.
+- **Behavior:** `agent-sdk` takes **2.5× the turns** (14–15 vs 6) and **1.8× the tool calls** (13–14 vs 7–8).
+  Two causes, both visible in the traces:
+  - The `api` engine's model batches several tool calls per turn; the `agent-sdk` model made one per turn.
+  - With the README cut off, the `agent-sdk` agent searched around it: README headings, a `grep` for Pulse and
+    RB2B, extra `list_tree`s, and a Tier 3 read.
+
+  Errors are the same in both: no duplicate calls, no schema rejections, no permission denials. The lockdown held,
+  and no built-in tool was ever attempted. Every run's first `write_overview` was rejected for going over the word
+  limit, then accepted on the second try (2 write attempts everywhere). That is the same prompt issue
+  `conversation-caching.md` noted, and it is independent of the engine.
+- **Quality:** `api` is better: judge total 17 [16–18] vs 14 [12–16] on E2B, and 16 vs 14 locally. The gap is in
+  accuracy and coverage. What-not-how and clarity tie. Spot check (`e2b/api/run-3`, 18, vs
+  `e2b/agent-sdk/run-3`, 12): I agree with the judge. The `agent-sdk` overview rates Client Pulse, RB2B and the
+  digests "Low, known only from migration and route names", while the `api` overview describes them from the
+  README. The judge's reasons point at exactly the README content that the preview cut off.
+- **Environment:** local and E2B runs of the same engine behave alike: 6 vs 6 turns for `api`, 14 vs 15 for
+  `agent-sdk`, and similar token totals. E2B adds about 12 s (`api`) to 14 s (`agent-sdk`) end-to-end for sandbox
+  start, upload and download.
+
+**Verdict.** On this repo and out of the box, the `api` engine is better on every question: as cheap or cheaper,
+57% faster, about 3 judge points better, and with fewer turns. But the comparison is not yet a fair test of the
+Agent SDK as an agent loop, because its harness silently truncated the most important input. That trade is the
+lesson: a harness gives you a loop, caching and context management for free, and also policies you didn't choose.
+
+**Next step** (a separate change, about $0.60 to re-measure only the `agent-sdk` half): keep every tool result
+under the 50,000-character inline cap, for example by capping Tier 1 reads by characters as well as lines in
+`RepoSandbox`. That treats both engines the same. Alternatively, pass a larger `maxResultSizeChars` per tool, but
+the CLI caps a finite value at 50,000. Then re-run the bench to see what remains of the gap.
