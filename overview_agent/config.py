@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 DEFAULT_MODEL = "claude-sonnet-5-5"
+ENGINES = ("api", "agent-sdk")  # api: our Messages API loop (agent.py); agent-sdk: Claude Agent SDK (sdk_agent.py)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
