@@ -328,7 +328,7 @@ class AgentFilesTests(unittest.TestCase):
     def test_real_package_is_uploaded_with_its_prompt(self):
         files = remote.agent_files()
         self.assertEqual(files[0], "main.py")
-        for rel in ("overview_agent/agent.py", "overview_agent/config.py",
+        for rel in ("overview_agent/agent.py", "overview_agent/config.py", "overview_agent/sandbox.py",
                     "overview_agent/prompts/overview_agent.md"):
             self.assertIn(rel, files)
         self.assertFalse(any("__pycache__" in rel for rel in files))

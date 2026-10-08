@@ -12,7 +12,7 @@ Every task ends with the whole test suite green.
 
 **Tech Stack:** Python 3.9.6 (the project venv), `unittest`, `argparse`, `anthropic`, `e2b`. No new dependencies.
 
-**Spec:** `specs/project-structure.md` (moves to `docs/specs/project-structure.md` in Task 5)
+**Spec:** `docs/specs/project-structure.md`
 
 ## Global Constraints
 

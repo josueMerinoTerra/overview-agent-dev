@@ -145,7 +145,7 @@ Agent behavior, prompt text, tool schemas, prompt caching, metrics, the E2B temp
   before.
 
 ## Results (2026-10-08)
-- Tests: 48 before (`233e296`), 62 after, all passing offline (`python3 -m unittest -v`). The 14 new tests cover
+- Tests: 48 before (`233e296`), 64 after, all passing offline (`python3 -m unittest -v`). The 16 new tests cover
   config paths, the CLI subcommands, running without `e2b`, the upload list, and `validate_overview`.
 - CLI: `main.py local --help` and `main.py remote --help` list the same options and defaults as the old
   `agent.py` / `remote.py` scripts.

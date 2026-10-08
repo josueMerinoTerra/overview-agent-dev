@@ -73,6 +73,23 @@ class BuildTemplateCommandTests(unittest.TestCase):
         build.assert_called_once_with()
 
 
+class MalformedEnvTests(unittest.TestCase):
+    def test_build_template_ignores_a_malformed_max_turns(self):
+        with mock.patch.object(main, "load_dotenv"), mock.patch.dict(os.environ, {"OVERVIEW_MAX_TURNS": "abc"}, clear=True), \
+                mock.patch.object(e2b_template, "build") as build:
+            code = main.main(["build-template"])
+        self.assertEqual(code, 0)
+        build.assert_called_once_with()
+
+    def test_local_reports_a_malformed_max_turns_as_a_usage_error(self):
+        with mock.patch.object(main, "load_dotenv"), mock.patch.dict(os.environ, {"OVERVIEW_MAX_TURNS": "abc"}, clear=True), \
+                mock.patch.object(main.agent, "run") as run, redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit) as cm:
+            main.main(["local", "r"])
+        self.assertEqual(cm.exception.code, 2)
+        run.assert_not_called()
+
+
 class EntryPointTests(unittest.TestCase):
     def test_no_subcommand_is_a_usage_error(self):
         with mock.patch.object(main, "load_dotenv"), redirect_stderr(io.StringIO()), \

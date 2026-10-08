@@ -23,8 +23,8 @@ def build_parser() -> argparse.ArgumentParser:
     env = os.environ.get
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument("--model", default=env("OVERVIEW_MODEL", DEFAULT_MODEL))
-    shared.add_argument("--max-turns", type=int, default=int(env("OVERVIEW_MAX_TURNS", "25")))
-    shared.add_argument("--max-tokens", type=int, default=int(env("OVERVIEW_MAX_TOKENS", "16000")))
+    shared.add_argument("--max-turns", type=int, default=env("OVERVIEW_MAX_TURNS", "25"))
+    shared.add_argument("--max-tokens", type=int, default=env("OVERVIEW_MAX_TOKENS", "16000"))
 
     parser = argparse.ArgumentParser(description="Write PROJECT_OVERVIEW.md for a repository.")
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
