@@ -21,7 +21,7 @@ Measurements: `docs/specs/e2b-remote-run.md` (Results).
 
 ## What you need
 
-- **Python 3.9+** and git.
+- **Python 3.10+** (the Claude Agent SDK needs it; 3.12 is what's tested) and git.
 - **An Anthropic API key** (https://console.anthropic.com), for both modes.
 - **For remote runs:** an **E2B account and API key** (https://e2b.dev/dashboard; the free Hobby tier is enough,
   its sandboxes live up to 1 hour and a run needs well under that), and internet access.
@@ -42,7 +42,8 @@ Configuration, all in `.env` (or real environment variables, which win; CLI flag
 | `E2B_API_KEY` | remote | yes for remote | Creates sandboxes and builds the template |
 | `OVERVIEW_MODEL` | both | no (default `claude-sonnet-5-5`) | Model, or `--model` |
 | `OVERVIEW_MAX_TURNS` | both | no (default 25) | Turn limit, or `--max-turns` |
-| `OVERVIEW_MAX_TOKENS` | both | no (default 16000) | Output tokens per turn, or `--max-tokens` |
+| `OVERVIEW_MAX_TOKENS` | both | no (default 16000) | Output tokens per turn (`api` engine only), or `--max-tokens` |
+| `OVERVIEW_ENGINE` | both | no (default `api`) | `api` or `agent-sdk` (see "Engines"), or `--engine` |
 | `OVERVIEW_REPO_PATH` | local | no (default `.`) | Repo used when `main.py local` gets no path |
 
 ## Run locally
@@ -76,7 +77,8 @@ python main.py remote ../dayNight --keep             # leave the sandbox running
 
 What happens, per run:
 1. Checks both keys, then clears the previous results in `overviews/<repo-name>/`.
-2. Starts a sandbox from the `overview-agent` template (Python, git, the `anthropic` SDK; no secrets).
+2. Starts a sandbox from the `overview-agent` template (Python, git, the `anthropic` SDK and the Claude Agent SDK;
+   no secrets).
 3. Uploads `main.py` and the `overview_agent/` package (code and prompt), so the sandbox always runs your current code.
 4. Gets the repo: a local folder is packed into one compressed archive (a "tarball") in memory, uploaded and
    unpacked; a git URL is cloned there (`--depth 1`).
@@ -96,6 +98,30 @@ Implications:
   at most 15 minutes and the agent command 14 minutes.
 - **`--keep` keeps billing** until the sandbox's 15-minute timeout (or until you kill it in the E2B dashboard).
 - Same-named repos share `overviews/<name>/`; a new run replaces the old results. Use `--out` to keep both.
+
+## Engines
+
+The agent can run on two engines. Both get the same prompt and the same sandboxed tools (`RepoSandbox`).
+
+- `api` (default): our own loop over the Messages API (`overview_agent/agent.py`). We place the cache breakpoints,
+  send the reminder and count everything.
+- `agent-sdk`: the Claude Agent SDK runs the loop (`overview_agent/sdk_agent.py`). The model sees only our five
+  tools (no Claude Code built-ins) and nothing from your machine's Claude Code setup (settings, CLAUDE.md, plugins,
+  memory, MCP servers). `--max-tokens` doesn't apply; each run is capped at $0.50 instead.
+
+Pick one with `--engine api|agent-sdk` (or `OVERVIEW_ENGINE` in `.env`) on `local` and `remote`.
+
+### Benchmark
+
+```bash
+python main.py bench /path/to/repo
+```
+
+Runs each engine once locally and three times in E2B (8 runs), scores every overview with a blind LLM judge, and
+writes `bench/<timestamp>/summary.md`. Expect about $2 for a medium repo; `--max-usd` (default 3.00) stops it
+before it can spend more. Local runs work on a filtered temp copy, so the repo folder is never written. If the bench
+stops, fix the cause and rerun with `--out bench/<timestamp>` to resume. Measurements:
+`docs/specs/agent-sdk-engine.md` (Results).
 
 ## Secrets and ignored files
 
