@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools import OVERVIEW_NAME, RepoSandbox, ToolError, is_ignored_dir, is_ignored_name
+from overview_agent.tools import OVERVIEW_NAME, RepoSandbox, ToolError, is_ignored_dir, is_ignored_name
 
 GOOD = """# Acme: Product Overview
 

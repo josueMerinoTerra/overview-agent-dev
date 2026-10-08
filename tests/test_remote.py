@@ -13,8 +13,8 @@ from unittest import mock
 
 from e2b import AuthenticationException, CommandExitException, SandboxException, TimeoutException
 
-import remote
-from tools import OVERVIEW_NAME
+from overview_agent import config, remote
+from overview_agent.tools import OVERVIEW_NAME
 
 
 def tar_members(data: bytes):
@@ -66,7 +66,7 @@ class OutputDirTests(unittest.TestCase):
             ("local", "/home/me/dayNight"): "dayNight",
         }
         for source, name in cases.items():
-            self.assertEqual(remote.output_dir(source), remote.HERE / "overviews" / name, source)
+            self.assertEqual(remote.output_dir(source), config.PROJECT_ROOT / "overviews" / name, source)
 
     def test_explicit_out_wins(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -347,7 +347,7 @@ class MainTests(unittest.TestCase):
 
 class TemplateTests(unittest.TestCase):
     def test_template_has_python_git_and_anthropic_and_no_secrets(self):
-        import e2b_template
+        from overview_agent import e2b_template
         from e2b import Template
         dockerfile = Template.to_dockerfile(e2b_template.template())
         self.assertIn("FROM python:3.12", dockerfile)

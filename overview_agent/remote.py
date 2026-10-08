@@ -22,8 +22,8 @@ from typing import Tuple
 
 from e2b import AuthenticationException, CommandExitException, Sandbox, TimeoutException
 
-from agent import DEFAULT_MODEL, load_dotenv, trace
-from tools import OVERVIEW_NAME, is_ignored_dir, is_ignored_name
+from overview_agent.config import DEFAULT_MODEL, PROJECT_ROOT, load_dotenv, trace
+from overview_agent.tools import OVERVIEW_NAME, is_ignored_dir, is_ignored_name
 
 HERE = Path(__file__).resolve().parent
 TEMPLATE = "overview-agent"
@@ -76,7 +76,7 @@ def output_dir(source: Tuple[str, str], out: str = "") -> Path:
     """Where results land: `out` if given, else overviews/<repo-name>/ in this project (not the cwd)."""
     if out:
         return Path(out).expanduser().resolve()
-    return HERE / "overviews" / repo_name(source)
+    return PROJECT_ROOT / "overviews" / repo_name(source)
 
 
 def make_tarball(path: str) -> bytes:

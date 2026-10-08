@@ -8,7 +8,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from types import SimpleNamespace
 from unittest import mock
 
-import agent
+from overview_agent import agent
 
 
 class FakeMessages:

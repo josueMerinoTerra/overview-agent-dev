@@ -17,34 +17,15 @@ from pathlib import Path
 
 import anthropic
 
-from tools import OVERVIEW_NAME, TIER3_MAX_FILES, TOOLS, RepoSandbox, ToolError
-
-DEFAULT_MODEL = "claude-sonnet-5-5"
-HERE = Path(__file__).resolve().parent
-
-def load_dotenv(path: Path = HERE / ".env") -> None:
-    """Minimal .env loader (KEY=VALUE lines). Existing environment variables win; empty values are skipped."""
-    if not path.is_file():
-        return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        value = value.strip().strip("'\"")
-        if value:
-            os.environ.setdefault(key.strip(), value)
+from overview_agent.config import DEFAULT_MODEL, load_dotenv, trace
+from overview_agent.tools import OVERVIEW_NAME, TIER3_MAX_FILES, TOOLS, RepoSandbox, ToolError
 
 
 def load_instructions() -> str:
-    path = HERE / "prompts" / "overview_agent.md"
+    path = Path(__file__).resolve().parent / "prompts" / "overview_agent.md"
     if not path.is_file():
         sys.exit("error: prompts/overview_agent.md not found next to agent.py")
     return path.read_text(encoding="utf-8")
-
-
-def trace(msg: str) -> None:
-    print(msg, file=sys.stderr, flush=True)
 
 
 def run(root: str, model: str, max_turns: int, max_tokens: int = 16000, metrics_json: str = "") -> int:

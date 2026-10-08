@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from e2b import Template, default_build_logger
 
-from agent import load_dotenv
-from remote import TEMPLATE
+from overview_agent.config import load_dotenv
+from overview_agent.remote import TEMPLATE
 
 
 def template():
