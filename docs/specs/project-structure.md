@@ -1,7 +1,7 @@
 # Spec: organize the project into a package with one entry point
 
-Status: approved design, not implemented · Baseline: `233e296` · Executor: the `refactor` sub-agent
-(`.claude/agents/refactor.md`)
+Status: implemented · Baseline: `233e296` · Executor: the `refactor` sub-agent
+(`.claude/agents/refactor.md`) · Plan: `docs/plans/2026-10-08-project-structure.md`
 
 ## Context
 Everything sits flat at the root: four modules, three test files, and design docs split between `specs/` and
@@ -144,5 +144,9 @@ Agent behavior, prompt text, tool schemas, prompt caching, metrics, the E2B temp
 - Optional live check (needs `ANTHROPIC_API_KEY`): `python main.py local <small repo>` writes an overview, as
   before.
 
-## Results
-Filled in after implementation: test count before and after, the `--help` comparison, and the live run if done.
+## Results (2026-10-08)
+- Tests: 48 before (`233e296`), 62 after, all passing offline (`python3 -m unittest -v`). The 14 new tests cover
+  config paths, the CLI subcommands, running without `e2b`, the upload list, and `validate_overview`.
+- CLI: `main.py local --help` and `main.py remote --help` list the same options and defaults as the old
+  `agent.py` / `remote.py` scripts.
+- Live runs: not repeated. The agent code, prompt and tool schemas are unchanged (the schemas are byte-identical).

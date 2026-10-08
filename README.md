@@ -1,13 +1,13 @@
 # Product Overview Agent
 
 Writes a `PROJECT_OVERVIEW.md` (what the product does, not how) for a repository.
-Instructions live in `prompts/overview_agent.md`; `tools.py` enforces its hard rules in code (ignore lists, Tier 3
-budget, single writable file).
+Instructions live in `overview_agent/prompts/overview_agent.md`; `overview_agent/sandbox.py` enforces its hard rules
+in code (ignore lists, Tier 3 budget, single writable file).
 
-You can run it two ways. Both run the **same agent** (`agent.py` + `tools.py`) with the same prompt and limits;
+You can run it two ways. Both run the **same agent** (the `overview_agent/` package) with the same prompt and limits;
 only *where* it runs changes.
 
-| | Local run (`agent.py`) | Remote run (`remote.py`) |
+| | Local run (`main.py local`) | Remote run (`main.py remote`) |
 |---|---|---|
 | Where the agent runs | Your machine | An [E2B](https://e2b.dev) cloud sandbox, deleted after the run |
 | Target | A local folder | A local folder (uploaded) or a public git URL (cloned in the sandbox) |
@@ -17,7 +17,7 @@ only *where* it runs changes.
 | Measured time (small repo) | ~15 s | ~25 s (≈10 s of sandbox start, upload/clone, download) |
 | Measured cost (small repo) | ~$0.03 Anthropic | ~$0.03 Anthropic + a few seconds of E2B sandbox time |
 
-Measurements: `specs/e2b-remote-run.md` (Results).
+Measurements: `docs/specs/e2b-remote-run.md` (Results).
 
 ## What you need
 
@@ -43,14 +43,14 @@ Configuration, all in `.env` (or real environment variables, which win; CLI flag
 | `OVERVIEW_MODEL` | both | no (default `claude-sonnet-5-5`) | Model, or `--model` |
 | `OVERVIEW_MAX_TURNS` | both | no (default 25) | Turn limit, or `--max-turns` |
 | `OVERVIEW_MAX_TOKENS` | both | no (default 16000) | Output tokens per turn, or `--max-tokens` |
-| `OVERVIEW_REPO_PATH` | local | no (default `.`) | Repo used when `agent.py` gets no path |
+| `OVERVIEW_REPO_PATH` | local | no (default `.`) | Repo used when `main.py local` gets no path |
 
 ## Run locally
 
 ```bash
-python agent.py ../dayNight                        # or any repo path; default is $OVERVIEW_REPO_PATH
-python agent.py ../dayNight --model claude-opus-5-5
-python agent.py ../dayNight --metrics-json run.json   # also save the run metrics
+python main.py local ../dayNight                          # or any repo path; default is $OVERVIEW_REPO_PATH
+python main.py local ../dayNight --model claude-opus-5-5
+python main.py local ../dayNight --metrics-json run.json  # also save the run metrics
 ```
 
 What happens: the agent explores the folder through the sandboxed tools, then writes
@@ -66,21 +66,21 @@ Implications:
 ## Run remotely (E2B)
 
 ```bash
-python e2b_template.py                             # once, and again only if the agent's dependencies change
-python remote.py ../dayNight                       # local folder: uploaded, minus ignored files
-python remote.py https://github.com/org/repo       # public git repo: cloned inside the sandbox
-python remote.py github.com/org/repo               # same; git@github.com:org/repo.git also works (cloned over https)
-python remote.py ../dayNight --out /tmp/result     # results somewhere else
-python remote.py ../dayNight --keep                # leave the sandbox running to inspect it (see below)
+python main.py build-template                        # once, and again only if the agent's dependencies change
+python main.py remote ../dayNight                    # local folder: uploaded, minus ignored files
+python main.py remote https://github.com/org/repo    # public git repo: cloned inside the sandbox
+python main.py remote github.com/org/repo            # same; git@github.com:org/repo.git also works (cloned over https)
+python main.py remote ../dayNight --out /tmp/result  # results somewhere else
+python main.py remote ../dayNight --keep             # leave the sandbox running to inspect it (see below)
 ```
 
 What happens, per run:
 1. Checks both keys, then clears the previous results in `overviews/<repo-name>/`.
 2. Starts a sandbox from the `overview-agent` template (Python, git, the `anthropic` SDK; no secrets).
-3. Uploads `agent.py`, `tools.py` and the prompt, so the sandbox always runs your current code.
+3. Uploads `main.py` and the `overview_agent/` package (code and prompt), so the sandbox always runs your current code.
 4. Gets the repo: a local folder is packed into one compressed archive (a "tarball") in memory, uploaded and
    unpacked; a git URL is cloned there (`--depth 1`).
-5. Runs `python agent.py` in the sandbox. Your `ANTHROPIC_API_KEY` is passed to that one command only. The trace
+5. Runs `python main.py local` in the sandbox. Your `ANTHROPIC_API_KEY` is passed to that one command only. The trace
    streams live to your terminal.
 6. Downloads `PROJECT_OVERVIEW.md` (only if the agent succeeded) and `metrics.json` into `overviews/<repo-name>/`.
 7. Kills the sandbox, also on errors and Ctrl-C.
@@ -99,13 +99,13 @@ Implications:
 
 ## Secrets and ignored files
 
-Both modes use the same lists in `tools.py`: `IGNORED_DIRS` (e.g. `node_modules`, `.git`, `vendor`, `Pods`,
-`.terraform`) and `IGNORED_FILE_PATTERNS` (lockfiles, generated code, and secrets such as `.env*`, `*.pem`, `*.key`,
-`*.p12`, `id_rsa*`, `.npmrc`, `.envrc`, `.git-credentials`, `*.tfstate`, `credentials.json`). Matching files are
-never read by the agent and never uploaded.
+Both modes use the same lists in `overview_agent/ignore_rules.py`: `IGNORED_DIRS` (e.g. `node_modules`, `.git`,
+`vendor`, `Pods`, `.terraform`) and `IGNORED_FILE_PATTERNS` (lockfiles, generated code, and secrets such as `.env*`,
+`*.pem`, `*.key`, `*.p12`, `id_rsa*`, `.npmrc`, `.envrc`, `.git-credentials`, `*.tfstate`, `credentials.json`).
+Matching files are never read by the agent and never uploaded.
 
 Generic names like `secrets/`, `target/` or `out/` are **not** ignored, because in some repos they are product code.
-If a project keeps secrets under another name, add the pattern to `tools.py` before running on it.
+If a project keeps secrets under another name, add the pattern to `overview_agent/ignore_rules.py` before running on it.
 
 ## Troubleshooting (remote)
 
@@ -113,7 +113,7 @@ If a project keeps secrets under another name, add the pattern to `tools.py` bef
 |---|---|
 | `error: E2B_API_KEY not set` / `ANTHROPIC_API_KEY not set` | Add it to `.env` |
 | `error: E2B rejected the API key` | Check `E2B_API_KEY` in the E2B dashboard |
-| `error: could not start a sandbox … (did you run python e2b_template.py?)` | Build the template once |
+| `error: could not start a sandbox … (did you run python main.py build-template?)` | Build the template once |
 | `error: git clone failed: …` | Typo, or a private repo: use a local folder instead |
 | `error: not a git URL or an existing directory` | Check the path or URL |
 | `error: sandbox timed out` | The run exceeded 14-15 minutes; try a lower `--max-turns` |

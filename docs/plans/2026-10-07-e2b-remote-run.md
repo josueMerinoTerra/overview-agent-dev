@@ -14,7 +14,7 @@ patterns.
 
 **Tech Stack:** Python 3.9 (project venv), `anthropic` (existing), `e2b==2.10.2` (sandbox SDK), `unittest`.
 
-**Spec:** `specs/e2b-remote-run.md`
+**Spec:** `docs/specs/e2b-remote-run.md`
 
 ## Global Constraints
 

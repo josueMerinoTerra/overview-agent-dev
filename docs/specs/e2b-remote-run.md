@@ -1,7 +1,7 @@
 # Spec: run the agent remotely in an E2B sandbox
 
 Status: implemented and measured · Baseline: `622c0fd` · Step 1 of 2 (step 2, porting to the Claude Agent SDK,
-gets its own spec) · Plan: `docs/superpowers/plans/2026-10-07-e2b-remote-run.md`
+gets its own spec) · Plan: `docs/plans/2026-10-07-e2b-remote-run.md`
 
 ## Context
 `agent.py` runs only on the local machine: `RepoSandbox` is a folder jail on the local disk, and the overview is
@@ -165,7 +165,7 @@ as a local run.
 ## Results (2026-10-08)
 One live run per row, `claude-sonnet-5-5`, default limits. Template `overview-agent` built in 50 s. Remote rows 1-2
 ran at `7dbd35f`; row 3 ran after the review fixes (`302d628`) and also exercises the SSH→https rewrite. Cost uses
-the Sonnet 5.5 list prices from `specs/conversation-caching.md` (Anthropic only; E2B sandbox time not included).
+the Sonnet 5.5 list prices from `docs/specs/conversation-caching.md` (Anthropic only; E2B sandbox time not included).
 
 | Run | Target | Turns | Tool calls (errors) | Out tokens | Cache write / read | Tier 3 | Agent time | End to end | Cost |
 |---|---|---|---|---|---|---|---|---|---|
