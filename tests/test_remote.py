@@ -361,6 +361,13 @@ class TemplateTests(unittest.TestCase):
         self.assertIn("pip install anthropic", dockerfile)
         self.assertNotIn("API_KEY", dockerfile)
 
+    def test_template_installs_the_same_agent_sdk_pin_as_requirements(self):
+        from overview_agent import e2b_template
+        from e2b import Template
+        pin = next(line.strip() for line in (config.PROJECT_ROOT / "requirements.txt").read_text().splitlines()
+                   if line.startswith("claude-agent-sdk"))
+        self.assertIn("pip install %s" % pin, Template.to_dockerfile(e2b_template.template()))
+
 
 if __name__ == "__main__":
     unittest.main()
