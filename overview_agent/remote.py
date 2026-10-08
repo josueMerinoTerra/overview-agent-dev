@@ -1,16 +1,12 @@
-#!/usr/bin/env python3
-"""Run the Product Overview Agent remotely, inside an E2B sandbox.
+"""Run the Product Overview Agent remotely, inside an E2B sandbox (`python main.py remote`).
 
-Usage:  python remote.py <git-url | local-path> [--model M] [--max-turns N] [--max-tokens N] [--out DIR] [--keep]
-
-The sandbox runs the same agent.py/tools.py as a local run; this script only moves things around. It uploads the
+The sandbox runs the same agent code as a local run; this module only moves things around. It uploads the
 agent code and the target repo, runs the agent with the API key passed to that one command, and downloads
 PROJECT_OVERVIEW.md and the run metrics into overviews/<repo-name>/. The local folder is never modified.
-Build the sandbox template once first: python e2b_template.py
+Build the sandbox template once first: python main.py build-template
 """
 from __future__ import annotations
 
-import argparse
 import io
 import os
 import re
@@ -22,7 +18,7 @@ from typing import Tuple
 
 from e2b import AuthenticationException, CommandExitException, Sandbox, TimeoutException
 
-from overview_agent.config import DEFAULT_MODEL, PROJECT_ROOT, load_dotenv, trace
+from overview_agent.config import PROJECT_ROOT, trace
 from overview_agent.tools import OVERVIEW_NAME, is_ignored_dir, is_ignored_name
 
 HERE = Path(__file__).resolve().parent
@@ -127,7 +123,7 @@ def run_remote(source: Tuple[str, str], args, sandbox_factory=None) -> int:
         trace("error: E2B rejected the API key (check E2B_API_KEY): %s" % e)
         return 1
     except Exception as e:
-        trace("error: could not start a sandbox from template '%s' (did you run python e2b_template.py?): %s"
+        trace("error: could not start a sandbox from template '%s' (did you run python main.py build-template?): %s"
               % (TEMPLATE, e))
         return 1
     try:
@@ -189,31 +185,3 @@ def _run_in_sandbox(sbx, kind: str, where: str, tarball: bytes, out: Path, args)
 def _echo(chunk: str) -> None:
     """Stream the agent's trace as it arrives (E2B passes raw chunks, newlines included)."""
     print(chunk, end="", file=sys.stderr, flush=True)
-
-
-def main(argv=None) -> int:
-    load_dotenv()
-    env = os.environ.get
-    ap = argparse.ArgumentParser(
-        description="Write PROJECT_OVERVIEW.md for a repository, running the agent in an E2B sandbox.")
-    ap.add_argument("source", help="git URL (https://..., git@..., github.com/org/repo) or a local folder")
-    ap.add_argument("--model", default=env("OVERVIEW_MODEL", DEFAULT_MODEL))
-    ap.add_argument("--max-turns", type=int, default=int(env("OVERVIEW_MAX_TURNS", "25")))
-    ap.add_argument("--max-tokens", type=int, default=int(env("OVERVIEW_MAX_TOKENS", "16000")))
-    ap.add_argument("--out", default="", help="results folder (default: overviews/<repo-name>/ in this project)")
-    ap.add_argument("--keep", action="store_true", help="leave the sandbox running at the end, to inspect it")
-    args = ap.parse_args(argv)
-    try:
-        source = parse_source(args.source)
-    except RemoteError as e:
-        trace("error: %s" % e)
-        return 1
-    try:
-        return run_remote(source, args)
-    except KeyboardInterrupt:  # run_remote's `finally` has already killed the sandbox
-        trace("interrupted")
-        return 130
-
-
-if __name__ == "__main__":
-    sys.exit(main())

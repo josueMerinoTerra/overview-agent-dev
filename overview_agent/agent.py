@@ -1,23 +1,18 @@
-#!/usr/bin/env python3
-"""Product Overview Agent: writes PROJECT_OVERVIEW.md for a local repository.
+"""The agent loop: sends the prompt and tools to Claude, runs each tool call in RepoSandbox, records metrics.
 
-Usage:  python agent.py [repo_path] [--model MODEL] [--max-turns N]
-
-The instructions come from prompts/overview_agent.md (relative to this file). The model explores the
-repo only through the sandboxed tools in tools.py, which enforce the hard rules.
+The instructions come from prompts/overview_agent.md (next to this file). The model explores the repo only
+through the sandboxed tools, which enforce the hard rules. Run it with `python main.py local`.
 """
 from __future__ import annotations
 
-import argparse
 import json
-import os
 import sys
 import time
 from pathlib import Path
 
 import anthropic
 
-from overview_agent.config import DEFAULT_MODEL, load_dotenv, trace
+from overview_agent.config import trace
 from overview_agent.tools import OVERVIEW_NAME, TIER3_MAX_FILES, TOOLS, RepoSandbox, ToolError
 
 
@@ -134,23 +129,3 @@ def run(root: str, model: str, max_turns: int, max_tokens: int = 16000, metrics_
         return 0
     print("error: %s was not written" % OVERVIEW_NAME, file=sys.stderr)
     return 1
-
-
-def main() -> None:
-    load_dotenv()
-    env = os.environ.get
-    ap = argparse.ArgumentParser(description="Write PROJECT_OVERVIEW.md for a local repository.")
-    ap.add_argument("repo", nargs="?", default=env("OVERVIEW_REPO_PATH", "."),
-                    help="repository root (default: $OVERVIEW_REPO_PATH or the current directory)")
-    ap.add_argument("--model", default=env("OVERVIEW_MODEL", DEFAULT_MODEL))
-    ap.add_argument("--max-turns", type=int, default=int(env("OVERVIEW_MAX_TURNS", "25")))
-    ap.add_argument("--max-tokens", type=int, default=int(env("OVERVIEW_MAX_TOKENS", "16000")))
-    ap.add_argument("--metrics-json", default="", help="also write the run metrics as JSON to this path")
-    args = ap.parse_args()
-    if not (env("ANTHROPIC_API_KEY") or env("ANTHROPIC_AUTH_TOKEN")):
-        trace("note: ANTHROPIC_API_KEY is not set (add it to .env); relying on an `ant auth login` profile if one exists")
-    sys.exit(run(args.repo, args.model, args.max_turns, args.max_tokens, args.metrics_json))
-
-
-if __name__ == "__main__":
-    main()

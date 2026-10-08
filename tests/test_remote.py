@@ -280,7 +280,7 @@ class RunRemoteTests(unittest.TestCase):
         with mock.patch.dict(os.environ, KEYS, clear=True), redirect_stderr(err):
             code = remote.run_remote(("git", "https://h/x"), self.args, sandbox_factory=failing_factory)
         self.assertEqual(code, 1)
-        self.assertIn("python e2b_template.py", err.getvalue())
+        self.assertIn("python main.py build-template", err.getvalue())
         self.assertIn("404", err.getvalue())
 
     def test_overview_committed_in_the_cloned_repo_is_not_presented_when_the_agent_fails(self):
@@ -321,28 +321,6 @@ class RunRemoteTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("error: connection reset", err)
         self.assertTrue(sbx.killed)
-
-
-class MainTests(unittest.TestCase):
-    def test_bad_source_is_one_error_line_and_no_sandbox(self):
-        err = io.StringIO()
-        with mock.patch.object(remote, "load_dotenv"), mock.patch.object(remote, "run_remote") as run, \
-                redirect_stderr(err):
-            code = remote.main(["/definitely/not/here"])
-        self.assertEqual(code, 1)
-        self.assertIn("error: not a git URL or an existing directory", err.getvalue())
-        run.assert_not_called()
-
-    def test_flags_and_env_defaults_reach_run_remote(self):
-        env = {"OVERVIEW_MODEL": "claude-opus-5-5", "OVERVIEW_MAX_TURNS": "7"}
-        with mock.patch.object(remote, "load_dotenv"), mock.patch.dict(os.environ, env, clear=True), \
-                mock.patch.object(remote, "run_remote", return_value=0) as run:
-            code = remote.main(["github.com/org/repo", "--keep"])
-        self.assertEqual(code, 0)
-        source, args = run.call_args[0]
-        self.assertEqual(source, ("git", "https://github.com/org/repo"))
-        self.assertEqual((args.model, args.max_turns, args.max_tokens, args.out, args.keep),
-                         ("claude-opus-5-5", 7, 16000, "", True))
 
 
 class TemplateTests(unittest.TestCase):
