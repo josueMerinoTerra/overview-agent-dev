@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -24,10 +25,13 @@ from tests.test_sandbox import GOOD
 USAGE = {"input_tokens": 5, "output_tokens": 7, "cache_creation_input_tokens": 11, "cache_read_input_tokens": 13}
 
 
-def result(subtype="success", turns=2, text="done", denials=None):
+def result(subtype="success", turns=2, text="done", denials=None, scale=1):
+    """A ResultMessage. Like the real CLI, usage and cost are cumulative for the session: `scale` = queries so far."""
+    usage = {k: v * scale for k, v in USAGE.items()}
     return ResultMessage(subtype=subtype, duration_ms=10, duration_api_ms=8, is_error=subtype != "success",
-                         num_turns=turns, session_id="s1", total_cost_usd=0.01, usage=dict(USAGE), result=text,
-                         permission_denials=denials)
+                         num_turns=turns, session_id="s1", total_cost_usd=0.01 * scale, usage=usage, result=text,
+                         permission_denials=denials,
+                         model_usage={"claude-sonnet-5-5": {"inputTokens": usage["input_tokens"], "costUSD": 0.01}})
 
 
 def tool_use(i, name, args):
@@ -63,6 +67,10 @@ async def writes_overview(client):
 
 async def says_done(client):
     return [result()]
+
+
+async def says_done_again(client):  # the second query of the session: cumulative usage covers both
+    return [result(scale=2)]
 
 
 async def hits_max_turns(client):
@@ -150,14 +158,37 @@ class SdkEngineTests(unittest.TestCase):
         with mock.patch.object(agent.anthropic, "Anthropic", return_value=fake), \
                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             agent.run(str(self.repo), "claude-sonnet-5-5", 3, metrics_json=str(api_metrics))
-        self.assertEqual(set(metrics) - {"sdk_cost_usd"}, set(json.loads(api_metrics.read_text())))
+        sdk_only = {"sdk_cost_usd", "model_usage"}  # what only the SDK reports
+        self.assertEqual(set(metrics) - sdk_only, set(json.loads(api_metrics.read_text())))
 
     def test_the_reminder_is_sent_once_when_nothing_was_written(self):
-        code, client, metrics, err = self.run_engine(says_done, says_done)
+        code, client, metrics, err = self.run_engine(says_done, says_done_again)
         self.assertEqual(code, 1)
         self.assertEqual(client.prompts, [FIRST_MESSAGE, REMINDER])
-        self.assertEqual(metrics["turns"], 4)
-        self.assertEqual(metrics["input_tokens"], 10)
+        self.assertEqual(metrics["turns"], 4)  # num_turns is per query: summed
+
+    def test_session_usage_and_cost_are_cumulative_so_the_last_result_wins(self):
+        _, _, metrics, _ = self.run_engine(says_done, says_done_again)
+        self.assertEqual((metrics["input_tokens"], metrics["cache_read_input_tokens"]), (10, 26))
+        self.assertAlmostEqual(metrics["sdk_cost_usd"], 0.02)
+
+    def test_per_model_usage_is_recorded_to_show_which_models_ran(self):
+        _, _, metrics, _ = self.run_engine(writes_overview)
+        self.assertEqual(list(metrics["model_usage"]), ["claude-sonnet-5-5"])
+
+    def test_parent_claude_code_session_variables_do_not_reach_the_cli(self):
+        seen = {}
+
+        def factory(options):
+            seen.update(os.environ)
+            return FakeClient(options, [says_done, says_done_again], {})
+
+        parent = {"CLAUDE_CODE_SESSION_ID": "parent", "CLAUDE_EFFORT": "max", "CLAUDECODE": "1", "KEEP_ME": "x"}
+        with mock.patch.dict(os.environ, parent):
+            self.run_engine(factory=factory)
+            self.assertEqual(os.environ["CLAUDE_CODE_SESSION_ID"], "parent")  # restored afterwards
+        self.assertEqual([k for k in seen if k.startswith("CLAUDE")], [])
+        self.assertEqual(seen["KEEP_ME"], "x")
 
     def test_the_turn_limit_is_named_metrics_are_written_and_no_reminder_follows(self):
         code, client, metrics, err = self.run_engine(hits_max_turns)
@@ -167,10 +198,11 @@ class SdkEngineTests(unittest.TestCase):
         self.assertEqual(metrics["turns"], 25)
 
     def test_calls_that_never_reached_our_code_and_denials_are_counted(self):
-        code, _, metrics, _ = self.run_engine(one_call_reaches_us_one_does_not, says_done)
-        self.assertEqual(metrics["tool_calls"], 1)
+        code, _, metrics, _ = self.run_engine(one_call_reaches_us_one_does_not, says_done_again)
         self.assertEqual(metrics["schema_rejected_calls"], 1)
         self.assertEqual(metrics["denied_calls"], 1)
+        # Every tool_use block counts as a call, as in the api engine, where such calls reach RepoSandbox and fail.
+        self.assertEqual((metrics["tool_calls"], metrics["tool_errors"]), (3, 2))
 
     def test_an_sdk_failure_is_one_error_line_and_still_writes_metrics(self):
         class Broken:

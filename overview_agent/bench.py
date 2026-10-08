@@ -88,8 +88,16 @@ def filtered_copy(src: str, dest: Path) -> Path:
     from overview_agent.remote import make_tarball  # remote imports e2b, which only the host has
 
     with tarfile.open(fileobj=io.BytesIO(make_tarball(src)), mode="r:gz") as tar:
-        tar.extractall(dest, filter="data")
+        tar.extractall(dest, filter=_inside_dest)
     return dest / "repo"
+
+
+def _inside_dest(member: tarfile.TarInfo, path: str) -> Optional[tarfile.TarInfo]:
+    """The safe "data" filter, but skip (instead of crash on) a link pointing outside the copy."""
+    try:
+        return tarfile.data_filter(member, path)
+    except tarfile.FilterError:
+        return None
 
 
 def finished(run_dir: Path) -> bool:
@@ -162,7 +170,7 @@ def _rows(model: str):
         ("Tool errors", metric("tool_errors"), "%d"),
         ("Duplicate calls", metric("duplicate_calls"), "%d"),
         ("Rejected by RepoSandbox", metric("rejected_calls"), "%d"),
-        ("Rejected by the SDK schema check", metric("schema_rejected_calls"), "%d"),
+        ("Answered by the SDK (bad args, unknown tool)", metric("schema_rejected_calls"), "%d"),
         ("Denied (permission)", metric("denied_calls"), "%d"),
         ("Write attempts", metric("write_attempts"), "%d"),
         ("Input, uncached", metric("input_tokens"), "%d"),

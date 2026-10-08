@@ -77,6 +77,20 @@ Known differences, recorded rather than fixed:
   identical for both engines.
 - `--max-tokens` doesn't apply to this engine (no such option).
 - Caching is the SDK's own, not our two breakpoints.
+- `max_turns` applies per query in the SDK, so the reminder (when it fires) gets a fresh limit; in the `api`
+  engine it covers the whole run.
+- `thinking` is left at each side's default (the Messages API's for `claude-sonnet-5-5`, the CLI's for the SDK).
+  `effort` is pinned to `high` on both.
+
+Accounting rules (from the final review, checked against the bundled CLI):
+- The `ResultMessage` `usage`, `model_usage` and `total_cost_usd` are cumulative for the session, so the last
+  result replaces earlier ones; `num_turns` and `permission_denials` are per query and are summed.
+- `tool_calls` and `tool_errors` include tool calls the SDK answered itself (bad arguments, unknown tool) and
+  denied calls, since in the `api` engine the same calls reach `RepoSandbox` and fail there.
+- `model_usage` is saved in the metrics, to show whether the CLI used any model besides `model` (the bench prices
+  every token at the `model`'s rates).
+- `CLAUDE*` variables in our process (for example from a Claude Code session that started the bench) are hidden
+  while the SDK starts its CLI, because the SDK passes the whole environment through.
 
 ### New: `overview_agent/task.py` and `overview_agent/recorder.py`
 What both engines share moves out of `agent.py` (no module may import `agent` except `main.py`):
@@ -124,7 +138,7 @@ Runs the matrix, judges the results and writes the report. Results go to `bench/
   never share a cache entry (different tools and framing), so this is fair. The report marks the cold run.
 - **Inputs.** The repo goes through the `remote.py` filter (`make_tarball`) for both environments. Local runs
   extract it into a fresh temp copy, so the real folder is never written and both environments see the same
-  files. E2B runs use `remote.run_remote` with the local path.
+  files (except a symlink pointing outside the repo, which the local copy skips instead of crashing on). E2B runs use `remote.run_remote` with the local path.
 - **Per run:** `bench/<ts>/<env>/<engine>/run-N/` holds `PROJECT_OVERVIEW.md`, `metrics.json`, the trace
   (`trace.log`), `judge.json`, and for E2B the end-to-end seconds.
 - **Resume.** A run that finished with exit code 0 (recorded in its `bench.json`) is skipped, so a crash never

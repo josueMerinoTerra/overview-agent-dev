@@ -7,6 +7,8 @@ machine's Claude Code setup (settings, CLAUDE.md, plugins, memory, MCP connector
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
 import shutil
 import sys
 import tempfile
@@ -65,6 +67,7 @@ def build_options(model: str, max_turns: int, workdir: str, tools: List[Any]) ->
 class _RunState:
     def __init__(self) -> None:
         self.usage = dict.fromkeys(USAGE_KEYS, 0)
+        self.model_usage: Dict[str, Any] = {}
         self.turns = 0
         self.final_text = ""
         self.error = ""
@@ -83,11 +86,12 @@ async def _read(client, state: _RunState) -> None:
                 elif isinstance(block, TextBlock) and block.text.strip():
                     trace("\n%s" % block.text.strip())
         elif isinstance(msg, ResultMessage):
-            state.turns += msg.num_turns
-            for key in USAGE_KEYS:
-                state.usage[key] += int((msg.usage or {}).get(key, 0) or 0)
+            state.turns += msg.num_turns  # per query
+            # Usage and cost are cumulative for the whole session, so the latest result replaces the earlier one.
+            state.usage = {key: int((msg.usage or {}).get(key, 0) or 0) for key in USAGE_KEYS}
+            state.model_usage = dict(msg.model_usage or {})
+            state.sdk_cost = msg.total_cost_usd or 0.0
             state.denied += len(msg.permission_denials or [])
-            state.sdk_cost += msg.total_cost_usd or 0.0
             state.final_text = msg.result or state.final_text
             if msg.subtype in LIMITS:
                 state.limit = LIMITS[msg.subtype]
@@ -110,6 +114,19 @@ async def _session(client_factory, options: ClaudeAgentOptions, sandbox: RepoSan
             state.error = "Agent SDK error: %s" % e
 
 
+@contextlib.contextmanager
+def _without_parent_claude_env():
+    """Hide CLAUDE* variables (e.g. from a Claude Code session that started us) while the SDK spawns its CLI.
+
+    The SDK passes this process's whole environment to the CLI, and options.env can only add or override.
+    """
+    hidden = {k: os.environ.pop(k) for k in [k for k in os.environ if k.startswith("CLAUDE")]}
+    try:
+        yield
+    finally:
+        os.environ.update(hidden)
+
+
 def run(root: str, model: str, max_turns: int, metrics_json: str = "", client_factory=ClaudeSDKClient) -> int:
     try:
         sandbox = RepoSandbox(root, log=trace)
@@ -121,14 +138,20 @@ def run(root: str, model: str, max_turns: int, metrics_json: str = "", client_fa
     started = time.monotonic()
     try:
         options = build_options(model, max_turns, workdir, make_tools(recorder))
-        asyncio.run(_session(client_factory, options, sandbox, state))
+        with _without_parent_claude_env():
+            asyncio.run(_session(client_factory, options, sandbox, state))
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+    # tool_use blocks our code never saw: answered by the SDK itself (bad arguments, unknown tool) or denied.
+    # Count them as failed calls too, as the api engine does when the same calls reach RepoSandbox and fail.
+    sdk_rejected = max(0, len(state.tool_uses) - recorder.counts["tool_calls"] - state.denied)
+    recorder.counts["tool_calls"] += sdk_rejected + state.denied
+    recorder.counts["tool_errors"] += sdk_rejected + state.denied
     extra = {
-        # tool_use blocks our code never saw: rejected by the SDK's schema check before reaching RepoSandbox
-        "schema_rejected_calls": max(0, len(state.tool_uses) - recorder.counts["tool_calls"] - state.denied),
+        "schema_rejected_calls": sdk_rejected,
         "denied_calls": state.denied,
         "sdk_cost_usd": round(state.sdk_cost, 6),
+        "model_usage": state.model_usage,  # per model: shows whether anything besides `model` ran
     }
     return finish_run("agent-sdk", model, sandbox, recorder, state.usage, state.turns, started,
                       state.final_text, metrics_json, extra, state.error)

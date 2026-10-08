@@ -118,6 +118,13 @@ class RunBenchTests(unittest.TestCase):
         self.assertEqual(len(runner.calls), 2)  # $2.00 spent + $1.00 next > $2.50
         self.assertIn("--max-usd", err)
 
+    def test_a_symlink_pointing_outside_the_repo_does_not_crash_the_local_copy(self):
+        (self.repo / "hosts").symlink_to("/etc/hosts")
+        runner = FakeRunner()
+        code, err = self.bench(runner)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(runner.calls), 8)
+
     def test_an_unpriced_model_fails_before_any_run(self):
         runner = FakeRunner()
         code, err = self.bench(runner, model="claude-unknown")
