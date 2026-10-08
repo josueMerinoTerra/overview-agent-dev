@@ -165,8 +165,8 @@ def _run_in_sandbox(sbx, kind: str, where: str, tarball: bytes, out: Path, args)
         sbx.files.write(TARBALL, tarball)
         sbx.commands.run("tar -xzf %s -C %s" % (TARBALL, HOME))
 
-    cmd = "python main.py local %s --model %s --max-turns %d --max-tokens %d --metrics-json %s" % (
-        REPO_DIR, shlex.quote(args.model), args.max_turns, args.max_tokens, METRICS)
+    cmd = "python main.py local %s --engine %s --model %s --max-turns %d --max-tokens %d --metrics-json %s" % (
+        REPO_DIR, shlex.quote(args.engine), shlex.quote(args.model), args.max_turns, args.max_tokens, METRICS)
     try:
         result = sbx.commands.run(cmd, cwd=AGENT_DIR, envs={"ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"]},
                                   on_stderr=_echo, timeout=AGENT_TIMEOUT)

@@ -2,21 +2,25 @@
 """Product Overview Agent: writes PROJECT_OVERVIEW.md (what a product does, not how) for a repository.
 
 Usage:
-  python main.py local [repo_path] [--model M] [--max-turns N] [--max-tokens N] [--metrics-json PATH]
-  python main.py remote <git-url | local-path> [--model M] [--max-turns N] [--max-tokens N] [--out DIR] [--keep]
+  python main.py local [repo_path] [--engine api|agent-sdk] [--model M] [--max-turns N] [--max-tokens N]
+                       [--metrics-json PATH]
+  python main.py remote <git-url | local-path> [--engine api|agent-sdk] [--model M] [--max-turns N]
+                        [--max-tokens N] [--out DIR] [--keep]
   python main.py build-template
 
 `local` runs the agent on this machine and writes into the repo. `remote` runs the same agent in an E2B sandbox
 and downloads the results into overviews/<repo-name>/. `build-template` builds that sandbox image (once).
+`--engine` picks who runs the loop: our Messages API loop (api) or the Claude Agent SDK (agent-sdk).
 """
 from __future__ import annotations
 
 import argparse
+import importlib
 import os
 import sys
 
 from overview_agent import agent
-from overview_agent.config import DEFAULT_MODEL, load_dotenv, trace
+from overview_agent.config import DEFAULT_MODEL, ENGINES, load_dotenv, trace
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,12 +29,16 @@ def build_parser() -> argparse.ArgumentParser:
     shared.add_argument("--model", default=env("OVERVIEW_MODEL", DEFAULT_MODEL))
     shared.add_argument("--max-turns", type=int, default=env("OVERVIEW_MAX_TURNS", "25"))
     shared.add_argument("--max-tokens", type=int, default=env("OVERVIEW_MAX_TOKENS", "16000"))
+    engine = argparse.ArgumentParser(add_help=False)
+    engine.add_argument("--engine", default=env("OVERVIEW_ENGINE", "api"), choices=ENGINES,
+                        help="api: our Messages API loop; agent-sdk: the Claude Agent SDK "
+                             "(default: $OVERVIEW_ENGINE or api)")
 
     parser = argparse.ArgumentParser(description="Write PROJECT_OVERVIEW.md for a repository.")
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
 
     local = commands.add_parser(
-        "local", parents=[shared], help="run the agent on this machine",
+        "local", parents=[shared, engine], help="run the agent on this machine",
         description="Write PROJECT_OVERVIEW.md for a local repository.")
     local.add_argument("repo", nargs="?", default=env("OVERVIEW_REPO_PATH", "."),
                        help="repository root (default: $OVERVIEW_REPO_PATH or the current directory)")
@@ -38,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     local.set_defaults(handler=run_local)
 
     remote = commands.add_parser(
-        "remote", parents=[shared], help="run the agent in an E2B sandbox",
+        "remote", parents=[shared, engine], help="run the agent in an E2B sandbox",
         description="Write PROJECT_OVERVIEW.md for a repository, running the agent in an E2B sandbox.")
     remote.add_argument("source", help="git URL (https://..., git@..., github.com/org/repo) or a local folder")
     remote.add_argument("--out", default="", help="results folder (default: overviews/<repo-name>/ in this project)")
@@ -54,6 +62,14 @@ def run_local(args: argparse.Namespace) -> int:
     env = os.environ.get
     if not (env("ANTHROPIC_API_KEY") or env("ANTHROPIC_AUTH_TOKEN")):
         trace("note: ANTHROPIC_API_KEY is not set (add it to .env); relying on an `ant auth login` profile if one exists")
+    if args.engine == "agent-sdk":
+        try:  # import_module (not `from … import`) so tests can stand in a fake or a missing module via sys.modules
+            sdk_agent = importlib.import_module("overview_agent.sdk_agent")  # needs claude-agent-sdk (Python 3.10+)
+        except ImportError as e:
+            trace("error: the agent-sdk engine needs the claude-agent-sdk package "
+                  "(Python 3.10+; pip install -r requirements.txt): %s" % e)
+            return 1
+        return sdk_agent.run(args.repo, args.model, args.max_turns, args.metrics_json)
     return agent.run(args.repo, args.model, args.max_turns, args.max_tokens, args.metrics_json)
 
 
@@ -81,7 +97,10 @@ def build_template(args: argparse.Namespace) -> int:
 
 def main(argv=None) -> int:
     load_dotenv()  # before parsing: the option defaults read the environment
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if getattr(args, "engine", "api") not in ENGINES:  # argparse doesn't check `choices` against an env default
+        parser.error("OVERVIEW_ENGINE must be one of: %s" % ", ".join(ENGINES))
     return args.handler(args)
 
 

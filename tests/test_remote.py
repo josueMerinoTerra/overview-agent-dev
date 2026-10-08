@@ -172,7 +172,7 @@ class RunRemoteTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.out = Path(self._tmp.name) / "out"
         self.args = SimpleNamespace(model="claude-sonnet-5-5", max_turns=25, max_tokens=16000,
-                                    out=str(self.out), keep=False)
+                                    out=str(self.out), keep=False, engine="api")
         self.factory_calls = []
 
     def run_with(self, sbx, source=("git", "https://github.com/org/repo"), env=KEYS):
@@ -201,7 +201,7 @@ class RunRemoteTests(unittest.TestCase):
         sbx = FakeSandbox()
         self.run_with(sbx)
         cmd, kw = sbx.agent_run()
-        self.assertTrue(cmd.startswith("python main.py local %s --model " % remote.REPO_DIR), cmd)
+        self.assertTrue(cmd.startswith("python main.py local %s --engine api --model " % remote.REPO_DIR), cmd)
         self.assertEqual(kw["envs"], {"ANTHROPIC_API_KEY": "sk-test"})
         self.assertEqual(kw["cwd"], remote.AGENT_DIR)
         self.assertEqual(kw["timeout"], remote.AGENT_TIMEOUT)
@@ -210,6 +210,13 @@ class RunRemoteTests(unittest.TestCase):
         others = [kw for c, kw in sbx.commands.runs if not c.startswith("python main.py local")]
         self.assertTrue(all("ANTHROPIC_API_KEY" not in (kw.get("envs") or {}) for kw in others))
         self.assertTrue(all("sk-test" not in str(v) for v in sbx.files.store.values()))
+
+    def test_the_engine_is_forwarded_to_the_agent_command(self):
+        self.args.engine = "agent-sdk"
+        sbx = FakeSandbox()
+        self.run_with(sbx)
+        cmd, _ = sbx.agent_run()
+        self.assertIn("--engine agent-sdk", cmd)
 
     def test_git_clone_is_shallow_quoted_and_never_prompts(self):
         sbx = FakeSandbox()
